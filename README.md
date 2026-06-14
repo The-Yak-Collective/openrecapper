@@ -5,9 +5,12 @@ An open-source Discord bot that **records voice channels**, produces
 overview, key points, open questions, references, and action items — then
 optionally emails it to your group.
 
-> **Self-hosted.** There is no shared/hosted instance. You run your own bot with
-> your own Discord application, Deepgram account, and (optional) storage and
-> summarization services. See [Setup](#setup).
+> **Self-hosted.** There is no shared/hosted instance, and **no “Add to
+> Discord” invite link** — by design. You run your own bot with your own Discord
+> application, Deepgram account, and (optional) storage and summarization
+> services. Installing OpenRecapper means creating your own Discord app and
+> inviting *that* (see [Setup](#setup) and [DISCORD_SETUP.md](DISCORD_SETUP.md)),
+> not clicking an invite to someone else's bot.
 
 ## Features
 
@@ -132,6 +135,10 @@ applicable laws. Be aware that:
 OpenRecapper is a standard Node.js app and runs anywhere Node 22 does. Common
 options:
 
+- **[exe.dev](https://exe.dev) VM (recommended):** OpenRecapper is developed and
+  run on an exe.dev VM and it's a great fit — a persistent Node 22 box with
+  systemd, SSH, and an HTTPS proxy, so you can `npm run build`, drop in a systemd
+  unit, and leave the bot running 24/7. This is what the maintainers use.
 - **Local / VPS:** `npm run build` then run `node dist/index.js` under a process
   manager (systemd, pm2, etc.).
 - **Docker:** a [`Dockerfile`](Dockerfile) is included.
