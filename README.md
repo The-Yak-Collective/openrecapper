@@ -135,7 +135,7 @@ applicable laws. Be aware that:
 OpenRecapper is a standard Node.js app and runs anywhere Node 22 does. Common
 options:
 
-- **[exe.dev](https://exe.dev) VM (recommended):** OpenRecapper is developed and
+- **[exe.dev](https://exe.dev/i/rlTIGN3KYBROR72) VM (recommended):** OpenRecapper is developed and
   run on an exe.dev VM and it's a great fit — a persistent Node 22 box with
   systemd, SSH, and an HTTPS proxy, so you can `npm run build`, drop in a systemd
   unit, and leave the bot running 24/7. This is what the maintainers use.
