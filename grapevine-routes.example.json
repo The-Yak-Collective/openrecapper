@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to grapevine-routes.json. Each route: react with `emoji` on a message in the source guild (optionally restricted to a single channel) to forward it via the destination webhook.",
+  "routes": [
+    {
+      "label": "Server A -> Server B #lounge",
+      "sourceGuildId": "111111111111111111",
+      "sourceChannelId": "222222222222222222",
+      "emoji": "🍇",
+      "destinationWebhookUrl": "https://discord.com/api/webhooks/REPLACE/ME",
+      "threshold": 1
+    },
+    {
+      "label": "Server B -> Server A #grapevine (admins only, 2+ votes)",
+      "sourceGuildId": "333333333333333333",
+      "emoji": "🍇",
+      "destinationWebhookUrl": "https://discord.com/api/webhooks/REPLACE/ME",
+      "threshold": 2,
+      "allowedRoleIds": ["444444444444444444"]
+    }
+  ]
+}

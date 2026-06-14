@@ -1,0 +1,117 @@
+import { Client, GatewayIntentBits, Events, Collection, Interaction, VoiceState, Partials, MessageReaction, PartialMessageReaction, User, PartialUser } from 'discord.js';
+import { Config, validateConfig } from './config';
+import { setClient } from './client';
+import { recordCommand } from './commands/record';
+import { stopCommand } from './commands/stop';
+import { statusCommand } from './commands/status';
+import { grapevineCommand } from './commands/grapevine';
+import { WorkerManager } from './services/worker-manager';
+import { testScheduleCommand } from './commands/test-schedule';
+import { startScheduler } from './services/scheduler';
+import { loadGrapevineConfig, handleReactionAdd } from './services/grapevine-service';
+import { runStartupHealthChecks } from './services/health-check';
+
+validateConfig();
+
+// Prevent DAVE/voice errors from crashing the process
+process.on('unhandledRejection', (err) => {
+  console.error('[Process] Unhandled rejection:', err);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught exception:', err);
+  // Only exit on truly fatal errors, not DAVE key exchange issues
+  if (err.message?.includes('ECONNRESET') || err.message?.includes('EPIPE')) {
+    process.exit(1);
+  }
+});
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.MessageContent, // privileged: needed to forward message text
+  ],
+  // Reactions on older (uncached) messages arrive as partials; enable so we can fetch them.
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
+});
+
+const commands = new Collection<string, any>();
+commands.set(recordCommand.data.name, recordCommand);
+commands.set(stopCommand.data.name, stopCommand);
+commands.set(statusCommand.data.name, statusCommand);
+commands.set(testScheduleCommand.data.name, testScheduleCommand);
+commands.set(grapevineCommand.data.name, grapevineCommand);
+
+setClient(client);
+
+client.once(Events.ClientReady, (c) => {
+  console.log(`✅ Logged in as ${c.user.tag}`);
+  startScheduler();
+  loadGrapevineConfig();
+  runStartupHealthChecks(c).catch((err) => console.error('[HealthCheck] Unexpected error:', err));
+});
+
+client.on(Events.MessageReactionAdd, async (reaction: MessageReaction | PartialMessageReaction, user: User | PartialUser) => {
+  try {
+    await handleReactionAdd(reaction, user);
+  } catch (err) {
+    console.error('[Grapevine] Unhandled error in reaction handler:', err);
+  }
+});
+
+client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+  console.log(`[Interaction] Received: type=${interaction.type} id=${interaction.id}`);
+  if (!interaction.isChatInputCommand()) return;
+
+  console.log(`[Interaction] Command: /${interaction.commandName}`);
+  const command = commands.get(interaction.commandName);
+  if (!command) return;
+
+  try {
+    await command.execute(interaction);
+  } catch (error) {
+    console.error(`Error executing /${interaction.commandName}:`, error);
+    const reply = { content: '❌ An error occurred.', ephemeral: true };
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(reply);
+    } else {
+      await interaction.reply(reply);
+    }
+  }
+});
+
+// Auto-stop recording when the bot is the last one in the voice channel
+const stoppingChannels = new Set<string>();
+client.on(Events.VoiceStateUpdate, async (oldState: VoiceState, newState: VoiceState) => {
+  // We care about someone leaving a channel (oldState had a channel)
+  if (!oldState.channel) return;
+
+  const manager = WorkerManager.getInstance();
+  const channelId = oldState.channel.id;
+
+  // Is this channel being recorded?
+  if (!manager.isRecording(channelId)) return;
+
+  // Guard against double-stop from simultaneous leave events
+  if (stoppingChannels.has(channelId)) return;
+
+  // Count non-bot members still in the channel
+  const members = oldState.channel.members.filter((m) => !m.user.bot);
+  if (members.size > 0) return;
+
+  // Everyone left — auto-stop
+  stoppingChannels.add(channelId);
+  console.log(`[AutoStop] All users left <#${channelId}>, stopping recording`);
+  try {
+    await manager.stopRecording(channelId);
+  } catch (err) {
+    console.error('[AutoStop] Failed to stop recording:', err);
+  } finally {
+    stoppingChannels.delete(channelId);
+  }
+});
+
+client.login(Config.DISCORD_TOKEN);
