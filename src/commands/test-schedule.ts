@@ -1,21 +1,65 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
+import {
+  SlashCommandBuilder,
+  ChatInputCommandInteraction,
+  AutocompleteInteraction,
+} from 'discord.js';
 import { triggerScheduledRecording } from '../services/scheduler';
+import { getSchedule, getSchedulesForGuild } from '../services/schedule-store';
+import { respondScheduleAutocomplete } from './schedule';
 
 export const testScheduleCommand = {
   data: new SlashCommandBuilder()
     .setName('test-schedule')
-    .setDescription('Manually trigger the scheduled recording (for testing)'),
+    .setDescription('Manually trigger a scheduled recording (for testing)')
+    .addStringOption((o) =>
+      o
+        .setName('schedule')
+        .setDescription('Which schedule to fire (default: the only one in this server)')
+        .setRequired(false)
+        .setAutocomplete(true),
+    ),
+
+  async autocomplete(interaction: AutocompleteInteraction) {
+    await respondScheduleAutocomplete(interaction);
+  },
 
   async execute(interaction: ChatInputCommandInteraction) {
-    if (!interaction.guild) {
+    if (!interaction.guildId) {
       await interaction.reply({ content: '❌ This command only works in servers.', ephemeral: true });
       return;
+    }
+
+    // Resolve the target schedule: explicit option > the guild's only schedule.
+    let scheduleId = interaction.options.getString('schedule') || '';
+    if (scheduleId) {
+      const s = getSchedule(scheduleId);
+      if (!s || s.guildId !== interaction.guildId) {
+        await interaction.reply({ content: '❌ Schedule not found in this server.', ephemeral: true });
+        return;
+      }
+    } else {
+      const guildSchedules = getSchedulesForGuild(interaction.guildId);
+      if (guildSchedules.length === 0) {
+        await interaction.reply({
+          content: '❌ No schedules configured. Add one with `/schedule add`.',
+          ephemeral: true,
+        });
+        return;
+      }
+      if (guildSchedules.length > 1) {
+        await interaction.reply({
+          content: '❌ Multiple schedules exist — pick one with the `schedule:` option.',
+          ephemeral: true,
+        });
+        return;
+      }
+      scheduleId = guildSchedules[0].id;
     }
 
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const result = await triggerScheduledRecording();
+      const result = await triggerScheduledRecording(scheduleId);
       await interaction.editReply(`✅ ${result}`);
     } catch (error: any) {
       await interaction.editReply(`❌ Failed to trigger scheduled recording: ${error.message}`);

@@ -23,7 +23,9 @@ optionally emails it to your group.
 - **Email delivery** *(optional)* — Emails the summary + transcript links to a configured address.
 - **Cloud archival** *(optional)* — Uploads recordings/transcripts to any S3-compatible bucket (e.g. Cloudflare R2) with download links.
 - **Auto-stop** — Stops automatically when everyone leaves the voice channel.
-- **Scheduled recording** *(optional)* — Auto-join a standing call on a cron schedule.
+- **Scheduled recording** *(optional)* — Auto-join standing calls on a schedule, managed at runtime with `/schedule`.
+- **Silence timeout** — Auto-leaves and cleans up if a call has no voice activity for a configurable window (default 20 min).
+- **Recording cleanup** — Prunes old audio files on a retention schedule while keeping transcripts/summaries.
 - **DAVE E2EE** — Supports Discord's end-to-end encryption for voice.
 - **Startup health check** — Validates the Deepgram key on boot and can DM an alert if it's dead.
 - **Grapevine** *(optional)* — Cross-server reaction forwarding via webhook. See [`docs/GRAPEVINE.md`](docs/GRAPEVINE.md).
@@ -113,10 +115,27 @@ standup”, “book club”).
 
 ## Scheduled recording (optional)
 
-The bot can auto-join and record a standing call on a cron schedule. Set
-`SCHEDULED_GUILD_ID`, `SCHEDULED_VOICE_CHANNEL_ID`, `SCHEDULED_TEXT_CHANNEL_ID`,
-`SCHEDULED_CRON`, and `SCHEDULED_TIMEZONE` (see `.env.example`). Use
-`/test-schedule` to trigger the same code path manually.
+The bot can auto-join and record standing calls on a schedule, managed at
+runtime with the **`/schedule`** command (requires Manage Server):
+
+```
+/schedule add voice_channel:#standup days:mon,fri time:11:15
+/schedule list
+/schedule edit | remove | pause | resume
+```
+
+`days` accepts names/aliases (`mon,fri`, `weekdays`, `weekends`, `daily`),
+`time` is 24-hour `HH:MM`, and `timezone` is any IANA zone (default
+`America/New_York`). Schedules persist to `data/schedules.json` and survive
+restarts. Use `/test-schedule` to trigger one manually.
+
+The legacy `SCHEDULED_*` env vars (see `.env.example`) are still honored as a
+**one-time seed**: if no `data/schedules.json` exists on first start, they create
+the first schedule, after which the JSON store is authoritative.
+
+A configurable **silence timeout** (`SILENCE_TIMEOUT_MINUTES`, default 20) makes
+the bot auto-leave a call with no voice activity, and old audio files are pruned
+after `RECORDING_RETENTION_DAYS` (default 7) while transcripts are kept.
 
 ## Privacy & consent
 

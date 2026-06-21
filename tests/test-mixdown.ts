@@ -520,7 +520,7 @@ async function testSilenceFillerMaxCap() {
 
 // ─── Main ─────────────────────────────────────────────────────────────
 async function main() {
-  console.log('=== discord-scribe mixdown test suite ===');
+  console.log('=== openrecapper mixdown test suite ===');
 
   await testSilenceFillerBasic();
   await testSilenceFillerNoGap();

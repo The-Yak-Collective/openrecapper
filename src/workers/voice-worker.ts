@@ -48,6 +48,9 @@ export class VoiceWorker {
   // Persists across opus-stream reconnections so a new SilenceFiller can fill
   // the gap between the old stream's end and the new stream's start.
   private userLastChunkTime: Map<string, number> = new Map();
+  // Timestamp (ms) of the most recent opus packet received from ANY user.
+  // Used by the silence-timeout feature to decide when to auto-leave.
+  private lastVoiceActivityAt: number = 0;
 
   constructor(options: VoiceWorkerOptions) {
     this.options = options;
@@ -55,6 +58,7 @@ export class VoiceWorker {
 
   async start(): Promise<void> {
     this.sessionStartedAt = Date.now();
+    this.lastVoiceActivityAt = 0; // No activity until we receive actual audio
     const { getClient } = require('../client');
     const client = getClient();
 
@@ -114,6 +118,8 @@ export class VoiceWorker {
     console.log(`[VoiceWorker] Receiver ready, listening for speaking events...`);
 
     receiver.speaking.on('start', (userId: string) => {
+      // Mark voice activity on every speaking-start event (even if already recording)
+      this.lastVoiceActivityAt = Date.now();
       if (this.userStreams.has(userId)) return; // Already recording this user
       this.startUserStream(userId, receiver);
     });
@@ -180,6 +186,12 @@ export class VoiceWorker {
     } else {
       decoder.pipe(silenceFiller).pipe(writeStream, { end: false });
     }
+
+    // Update last-activity timestamp on every opus packet so the silence
+    // timeout resets continuously while anyone is speaking.
+    opusStream.on('data', () => {
+      this.lastVoiceActivityAt = Date.now();
+    });
 
     opusStream.pipe(decoder);
 
@@ -253,5 +265,20 @@ export class VoiceWorker {
 
   getSpeakerCount(): number {
     return this.userStreams.size;
+  }
+
+  /**
+   * Returns the timestamp (ms) of the last opus packet received from any user,
+   * or 0 if no audio has ever been received in this session.
+   */
+  getLastVoiceActivityAt(): number {
+    return this.lastVoiceActivityAt;
+  }
+
+  /**
+   * Returns true if any opus audio has been received during this session.
+   */
+  hasReceivedAudio(): boolean {
+    return this.lastVoiceActivityAt > 0;
   }
 }

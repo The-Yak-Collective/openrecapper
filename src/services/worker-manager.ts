@@ -18,6 +18,7 @@ export interface RecordingSession {
   worker: VoiceWorker;
   liveTranscription: LiveTranscriptionService | null;
   startedAt: number;
+  silenceCheckTimer: ReturnType<typeof setInterval> | null;
 }
 
 export interface StartRecordingOptions {
@@ -89,13 +90,18 @@ export class WorkerManager {
     await worker.start();
 
     const callName = options.callName || `Call ${new Date().toISOString().slice(0, 10)}`;
-    this.sessions.set(options.channelId, {
+    const session: RecordingSession = {
       ...options,
       callName,
       worker,
       liveTranscription,
       startedAt: Date.now(),
-    });
+      silenceCheckTimer: null,
+    };
+    this.sessions.set(options.channelId, session);
+
+    // Start silence-timeout monitoring if configured
+    this.startSilenceMonitor(session);
 
     console.log(`[WorkerManager] Started recording "${callName}" in channel ${options.channelId}`);
   }
@@ -104,6 +110,12 @@ export class WorkerManager {
     const session = this.sessions.get(channelId);
     if (!session) {
       throw new Error('No active session for this channel');
+    }
+
+    // Clear silence-timeout timer
+    if (session.silenceCheckTimer) {
+      clearInterval(session.silenceCheckTimer);
+      session.silenceCheckTimer = null;
     }
 
     // Close live transcription streams first to flush final results
@@ -608,5 +620,109 @@ export class WorkerManager {
       startedAt: s.startedAt,
       speakerCount: s.worker.getSpeakerCount(),
     }));
+  }
+
+  /**
+   * Start a periodic check for silence timeout on a recording session.
+   * If no opus packets have been received for SILENCE_TIMEOUT_MINUTES,
+   * the bot auto-stops the recording, leaves the voice channel, and
+   * cleans up the empty session directory.
+   */
+  private startSilenceMonitor(session: RecordingSession): void {
+    const timeoutMinutes = Config.SILENCE_TIMEOUT_MINUTES;
+    if (timeoutMinutes <= 0) {
+      console.log(`[SilenceMonitor] Disabled (SILENCE_TIMEOUT_MINUTES=0)`);
+      return;
+    }
+
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    // Check every 60 seconds
+    const CHECK_INTERVAL_MS = 60_000;
+
+    console.log(`[SilenceMonitor] Monitoring channel ${session.channelId} — timeout: ${timeoutMinutes} min`);
+
+    session.silenceCheckTimer = setInterval(async () => {
+      const lastActivity = session.worker.getLastVoiceActivityAt();
+      const now = Date.now();
+
+      // If no audio has ever been received, measure from session start
+      const referenceTime = lastActivity > 0 ? lastActivity : session.startedAt;
+      const silentMs = now - referenceTime;
+
+      if (silentMs >= timeoutMs) {
+        console.log(
+          `[SilenceMonitor] No voice activity for ${Math.round(silentMs / 60000)} min ` +
+          `in channel ${session.channelId} — auto-stopping`
+        );
+        await this.silenceAutoStop(session);
+      }
+    }, CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Auto-stop a recording session due to silence timeout.
+   * Leaves the voice channel, posts a message, and cleans up the empty
+   * session directory. Does NOT kick off transcription (there's nothing
+   * to transcribe).
+   */
+  private async silenceAutoStop(session: RecordingSession): Promise<void> {
+    const channelId = session.channelId;
+
+    // Prevent double-stop if this fires while a manual stop is in progress
+    if (!this.sessions.has(channelId)) return;
+
+    // Clear the timer first to prevent re-entry
+    if (session.silenceCheckTimer) {
+      clearInterval(session.silenceCheckTimer);
+      session.silenceCheckTimer = null;
+    }
+
+    // Close live transcription streams
+    if (session.liveTranscription) {
+      try {
+        await session.liveTranscription.close();
+      } catch (err) {
+        console.error('[SilenceMonitor] Error closing live transcription:', err);
+      }
+    }
+
+    // Capture audio state BEFORE stop() (which may clear internal state)
+    const hadAudio = session.worker.hasReceivedAudio();
+
+    // Stop the worker (disconnects from voice)
+    const result = await session.worker.stop();
+    this.sessions.delete(channelId);
+    const sessionDir = result.sessionDir;
+
+    console.log(
+      `[SilenceMonitor] Stopped recording in channel ${channelId} ` +
+      `(hadAudio=${hadAudio}, files=${result.files.length})`
+    );
+
+    // Clean up the empty recording directory if no audio was ever captured
+    if (!hadAudio && fs.existsSync(sessionDir)) {
+      try {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        console.log(`[SilenceMonitor] Cleaned up empty session dir: ${sessionDir}`);
+      } catch (err) {
+        console.error(`[SilenceMonitor] Failed to clean up session dir:`, err);
+      }
+    }
+
+    // Post a brief message to the text channel
+    try {
+      const { getClient } = require('../client');
+      const client = getClient();
+      const textChannel = await client.channels.fetch(session.textChannelId);
+      if (textChannel?.isTextBased?.()) {
+        const timeoutMinutes = Config.SILENCE_TIMEOUT_MINUTES;
+        await (textChannel as TextChannel).send(
+          `🔇 Recording ended — no voice activity detected for ${timeoutMinutes} minutes. ` +
+          `Leaving <#${channelId}>.`
+        );
+      }
+    } catch (err) {
+      console.error('[SilenceMonitor] Failed to post timeout message:', err);
+    }
   }
 }

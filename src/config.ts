@@ -32,6 +32,16 @@ export const Config = {
   SUMMARY_GROUP_NAME: process.env.SUMMARY_GROUP_NAME || 'study group',
   // Where to email the summary + transcript links after each call (optional).
   SUMMARY_EMAIL_TO: process.env.SUMMARY_EMAIL_TO || '',
+  // Number of days to keep raw audio files (.pcm, .wav) before auto-cleanup.
+  // Transcripts and metadata are always preserved. Default: 7 days.
+  RECORDING_RETENTION_DAYS: parseInt(process.env.RECORDING_RETENTION_DAYS || '7', 10),
+  // Minutes of silence (no opus packets from any user) before the bot
+  // auto-leaves the voice channel. Generous default (20 min) to accommodate
+  // study-group silent reading periods. Set to 0 to disable.
+  SILENCE_TIMEOUT_MINUTES: parseInt(process.env.SILENCE_TIMEOUT_MINUTES || '20', 10),
+  // Optional override for where standing-call schedules are persisted.
+  // Defaults to ./data/schedules.json (managed via the /schedule command).
+  SCHEDULES_FILE: process.env.SCHEDULES_FILE || '',
 };
 
 export function validateConfig() {

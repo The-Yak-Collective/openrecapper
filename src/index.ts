@@ -5,11 +5,13 @@ import { recordCommand } from './commands/record';
 import { stopCommand } from './commands/stop';
 import { statusCommand } from './commands/status';
 import { grapevineCommand } from './commands/grapevine';
+import { scheduleCommand } from './commands/schedule';
 import { WorkerManager } from './services/worker-manager';
 import { testScheduleCommand } from './commands/test-schedule';
 import { startScheduler } from './services/scheduler';
 import { loadGrapevineConfig, handleReactionAdd } from './services/grapevine-service';
 import { runStartupHealthChecks } from './services/health-check';
+import { startCleanupScheduler } from './services/recording-cleanup';
 
 validateConfig();
 
@@ -44,6 +46,7 @@ commands.set(stopCommand.data.name, stopCommand);
 commands.set(statusCommand.data.name, statusCommand);
 commands.set(testScheduleCommand.data.name, testScheduleCommand);
 commands.set(grapevineCommand.data.name, grapevineCommand);
+commands.set(scheduleCommand.data.name, scheduleCommand);
 
 setClient(client);
 
@@ -52,6 +55,7 @@ client.once(Events.ClientReady, (c) => {
   startScheduler();
   loadGrapevineConfig();
   runStartupHealthChecks(c).catch((err) => console.error('[HealthCheck] Unexpected error:', err));
+  startCleanupScheduler();
 });
 
 client.on(Events.MessageReactionAdd, async (reaction: MessageReaction | PartialMessageReaction, user: User | PartialUser) => {
@@ -64,6 +68,21 @@ client.on(Events.MessageReactionAdd, async (reaction: MessageReaction | PartialM
 
 client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   console.log(`[Interaction] Received: type=${interaction.type} id=${interaction.id}`);
+
+  // Autocomplete (e.g. /schedule's `schedule:` option) arrives as its own
+  // interaction type and must be answered separately from command execution.
+  if (interaction.isAutocomplete()) {
+    const command = commands.get(interaction.commandName);
+    if (command?.autocomplete) {
+      try {
+        await command.autocomplete(interaction);
+      } catch (err) {
+        console.error(`[Interaction] Autocomplete error for /${interaction.commandName}:`, err);
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   console.log(`[Interaction] Command: /${interaction.commandName}`);

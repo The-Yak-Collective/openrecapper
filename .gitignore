@@ -1,7 +1,9 @@
 node_modules/
 dist/
 recordings/
+data/
 .env
 *.pcm
 *.wav
 grapevine-routes.json
+NEXT-SESSION-*.md
