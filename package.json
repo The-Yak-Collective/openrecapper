@@ -1,6 +1,6 @@
 {
   "name": "openrecapper",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Open-source Discord bot: records voice channels, transcribes, and writes AI call summaries.",
   "license": "MIT",
   "repository": {
