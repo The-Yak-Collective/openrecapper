@@ -1,7 +1,7 @@
 import * as cron from 'node-cron';
 import { WorkerManager } from './worker-manager';
 import { getClient } from '../client';
-import { TextChannel } from 'discord.js';
+import { TextChannel, ChannelType } from 'discord.js';
 import { isoDate } from './call-naming';
 import {
   Schedule,
@@ -35,7 +35,7 @@ function callNameFor(schedule: Schedule): string {
 
 /**
  * Fire the recording for a single schedule by id. Used by cron and by
- * `/schedule` test paths. Resolves the text channel (explicit > #transcriptions).
+ * `/schedule` test paths. Resolves the explicit per-schedule text channel.
  */
 export async function triggerScheduledRecording(id: string): Promise<string> {
   const schedule = getSchedule(id);
@@ -57,24 +57,20 @@ export async function triggerScheduledRecording(id: string): Promise<string> {
     return msg;
   }
 
-  // Resolve text channel: explicit on the schedule > find #transcriptions > throw.
-  let textChannelId = schedule.textChannelId || '';
-  if (!textChannelId) {
-    const guild = client.guilds.cache.get(schedule.guildId);
-    if (!guild) {
-      throw new Error(`Guild ${schedule.guildId} not found in cache`);
-    }
-    const transcriptionChannel = guild.channels.cache.find(
-      (ch) => ch.name === 'transcriptions' && ch.isTextBased(),
-    ) as TextChannel | undefined;
-
-    if (transcriptionChannel) {
-      textChannelId = transcriptionChannel.id;
-      console.log(`[Scheduler] Resolved text channel: #${transcriptionChannel.name} (${textChannelId})`);
-    } else {
-      throw new Error('No #transcriptions channel found and no text channel set on the schedule');
-    }
+  const guild = client.guilds.cache.get(schedule.guildId);
+  if (!guild) {
+    throw new Error(`Guild ${schedule.guildId} not found in cache`);
   }
+
+  if (!schedule.textChannelId) {
+    throw new Error('Schedule has no text channel configured; edit it with `/schedule edit text_channel:`');
+  }
+
+  const textChannel = await client.channels.fetch(schedule.textChannelId).catch(() => null) as TextChannel | null;
+  if (!textChannel?.isTextBased?.() || textChannel.type !== ChannelType.GuildText) {
+    throw new Error(`Configured text channel ${schedule.textChannelId} is missing or is not a server text channel`);
+  }
+  const textChannelId = textChannel.id;
 
   const callName = callNameFor(schedule);
   console.log(

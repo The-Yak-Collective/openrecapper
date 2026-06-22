@@ -13,7 +13,7 @@ export interface Schedule {
   name: string;
   guildId: string;
   voiceChannelId: string;
-  /** Optional explicit text channel for results; falls back to #transcriptions if unset. */
+  /** Explicit text channel for live transcript/results. Legacy seeded schedules may lack it until edited. */
   textChannelId?: string;
   /** 5-field cron expression (min hour day-of-month month day-of-week). */
   cron: string;
@@ -37,6 +37,7 @@ export type NewScheduleInput = Omit<Schedule, 'id' | 'createdAt'> &
 
 // In-memory cache. Loaded lazily / on first access and kept in sync by mutators.
 let schedules: Schedule[] | null = null;
+let storeLocked = false;
 
 /** Resolve the on-disk path for schedules.json. */
 export function getSchedulesPath(): string {
@@ -85,11 +86,25 @@ export function getSchedule(id: string): Schedule | undefined {
   return getSchedules().find((s) => s.id === id);
 }
 
+function withStoreLock<T>(fn: () => T): T {
+  if (storeLocked) {
+    throw new Error('Schedule store is already mutating; retry the command in a moment');
+  }
+  storeLocked = true;
+  try {
+    return fn();
+  } finally {
+    storeLocked = false;
+  }
+}
+
 function persist(): void {
   const filePath = getSchedulesPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const body: ScheduleFile = { schedules: getSchedules() };
-  fs.writeFileSync(filePath, JSON.stringify(body, null, 2) + '\n', 'utf8');
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(body, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmpPath, filePath);
 }
 
 /** Generate a short, collision-checked base36 id. */
@@ -108,21 +123,23 @@ export function generateId(): string {
 
 /** Create + persist a new schedule, returning the stored record. */
 export function addSchedule(input: NewScheduleInput): Schedule {
-  const schedule: Schedule = {
-    id: generateId(),
-    name: input.name,
-    guildId: input.guildId,
-    voiceChannelId: input.voiceChannelId,
-    textChannelId: input.textChannelId,
-    cron: input.cron,
-    timezone: input.timezone,
-    paused: input.paused ?? false,
-    createdBy: input.createdBy,
-    createdAt: new Date().toISOString(),
-  };
-  getSchedules().push(schedule);
-  persist();
-  return schedule;
+  return withStoreLock(() => {
+    const schedule: Schedule = {
+      id: generateId(),
+      name: input.name,
+      guildId: input.guildId,
+      voiceChannelId: input.voiceChannelId,
+      textChannelId: input.textChannelId,
+      cron: input.cron,
+      timezone: input.timezone,
+      paused: input.paused ?? false,
+      createdBy: input.createdBy,
+      createdAt: new Date().toISOString(),
+    };
+    getSchedules().push(schedule);
+    persist();
+    return schedule;
+  });
 }
 
 /**
@@ -133,20 +150,24 @@ export function updateSchedule(
   id: string,
   patch: Partial<Omit<Schedule, 'id' | 'createdAt'>>,
 ): Schedule | undefined {
-  const list = getSchedules();
-  const idx = list.findIndex((s) => s.id === id);
-  if (idx === -1) return undefined;
-  list[idx] = { ...list[idx], ...patch, id: list[idx].id, createdAt: list[idx].createdAt };
-  persist();
-  return list[idx];
+  return withStoreLock(() => {
+    const list = getSchedules();
+    const idx = list.findIndex((s) => s.id === id);
+    if (idx === -1) return undefined;
+    list[idx] = { ...list[idx], ...patch, id: list[idx].id, createdAt: list[idx].createdAt };
+    persist();
+    return list[idx];
+  });
 }
 
 /** Remove a schedule by id. Returns true if one was removed. */
 export function removeSchedule(id: string): boolean {
-  const list = getSchedules();
-  const idx = list.findIndex((s) => s.id === id);
-  if (idx === -1) return false;
-  list.splice(idx, 1);
-  persist();
-  return true;
+  return withStoreLock(() => {
+    const list = getSchedules();
+    const idx = list.findIndex((s) => s.id === id);
+    if (idx === -1) return false;
+    list.splice(idx, 1);
+    persist();
+    return true;
+  });
 }

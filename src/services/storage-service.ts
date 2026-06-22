@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { Config } from '../config';
 import fs from 'fs';
 import path from 'path';
@@ -21,6 +21,10 @@ export class StorageService {
 
   static isConfigured(): boolean {
     return !!(Config.R2_ACCESS_KEY_ID && Config.R2_SECRET_ACCESS_KEY && Config.R2_ENDPOINT);
+  }
+
+  async probe(): Promise<void> {
+    await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
   }
 
   /**
@@ -54,16 +58,7 @@ export class StorageService {
 
       console.log(`[Storage] Uploading ${file} (${(size / 1024 / 1024).toFixed(1)}MB) to R2: ${key}`);
 
-      const fileStream = fs.createReadStream(filePath);
-      await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-          Body: fileStream,
-          ContentType: contentType,
-          ContentLength: size,
-        })
-      );
+      await this.putObjectWithRetry(filePath, key, contentType, size);
 
       uploadedFiles.push(key);
       console.log(`[Storage] Uploaded ${file}`);
@@ -71,6 +66,31 @@ export class StorageService {
 
     console.log(`[Storage] Session uploaded: ${prefix} (${uploadedFiles.length} files)`);
     return { prefix, uploadedFiles };
+  }
+
+  private async putObjectWithRetry(filePath: string, key: string, contentType: string, size: number): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const fileStream = fs.createReadStream(filePath);
+        await this.client.send(
+          new PutObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+            Body: fileStream,
+            ContentType: contentType,
+            ContentLength: size,
+          })
+        );
+        return;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 3) break;
+        console.warn(`[Storage] Upload attempt ${attempt}/3 failed for ${path.basename(filePath)}; retrying:`, err);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+      }
+    }
+    throw lastError;
   }
 
   private getContentType(filename: string): string {

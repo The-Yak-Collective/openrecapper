@@ -7,8 +7,13 @@ export const statusCommand = {
     .setDescription('Show active recording sessions'),
 
   async execute(interaction: ChatInputCommandInteraction) {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: '❌ This command only works in servers.', ephemeral: true });
+      return;
+    }
+
     const manager = WorkerManager.getInstance();
-    const sessions = manager.getActiveSessions();
+    const sessions = manager.getActiveSessions().filter((s) => s.guildId === interaction.guildId);
 
     if (sessions.length === 0) {
       await interaction.reply({ content: '📭 No active recording sessions.', ephemeral: true });

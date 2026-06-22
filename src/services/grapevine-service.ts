@@ -29,6 +29,8 @@ export interface GrapevineConfig {
   routes: GrapevineRoute[];
 }
 
+const DISCORD_WEBHOOK_RE = /^https:\/\/(?:discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/;
+
 let routes: GrapevineRoute[] = [];
 let configPath = '';
 // In-memory dedupe: key = `${messageId}::${routeIndex}` — prevents re-forwarding
@@ -49,7 +51,11 @@ export function loadGrapevineConfig(): { routes: GrapevineRoute[]; path: string 
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw) as GrapevineConfig;
-    routes = Array.isArray(parsed.routes) ? parsed.routes : [];
+    routes = (Array.isArray(parsed.routes) ? parsed.routes : []).filter((route, index) => {
+      if (DISCORD_WEBHOOK_RE.test(route.destinationWebhookUrl)) return true;
+      console.error(`[Grapevine] Ignoring route ${index}: destinationWebhookUrl must be a Discord webhook URL`);
+      return false;
+    });
     console.log(`[Grapevine] Loaded ${routes.length} route(s) from ${configPath}`);
     for (const r of routes) {
       console.log(

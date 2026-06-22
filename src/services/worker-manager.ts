@@ -5,7 +5,7 @@ import { SummaryService } from './summary-service';
 import { RelayClient } from './relay-client';
 import { LiveTranscriptionService } from './live-transcription-service';
 import { Config } from '../config';
-import { TextChannel } from 'discord.js';
+import { TextChannel, MessageCreateOptions } from 'discord.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -19,6 +19,8 @@ export interface RecordingSession {
   liveTranscription: LiveTranscriptionService | null;
   startedAt: number;
   silenceCheckTimer: ReturnType<typeof setInterval> | null;
+  sessionDir: string;
+  activeMarkerPath: string;
 }
 
 export interface StartRecordingOptions {
@@ -31,11 +33,38 @@ export interface StartRecordingOptions {
   callName?: string;
 }
 
+export interface OrphanSessionInfo {
+  sessionDir: string;
+  activeMarker: boolean;
+  audioFiles: string[];
+  transcriptFiles: string[];
+}
+
 export interface SessionInfo {
   guildId: string;
   channelId: string;
   startedAt: number;
   speakerCount: number;
+}
+
+interface DeliveryArtifacts {
+  sessionDir: string;
+  combinedWavPath: string;
+  srtPath?: string;
+  txtPath?: string;
+  metadataPath?: string;
+  summaryPath?: string;
+  transcriptText: string;
+  transcriptSrt: string;
+  summaryText: string | null;
+  speakerNames: Map<string, string>;
+  speakerCount: number;
+  transcriptionFailed: boolean;
+  transcriptionError?: string;
+  r2Prefix: string;
+  uploadWarning: string;
+  relayWarning: string;
+  emailWarning: string;
 }
 
 export class WorkerManager {
@@ -56,22 +85,15 @@ export class WorkerManager {
     );
     fs.mkdirSync(sessionDir, { recursive: true });
 
-    // Set up live transcription — look for a #transcriptions channel, fall back to text channel
+    // Set up live transcription in the explicit invocation/schedule text channel.
     let liveTranscription: LiveTranscriptionService | null = null;
     try {
       const { getClient } = require('../client');
       const client = getClient();
       const guild = client.guilds.cache.get(options.guildId);
       if (guild) {
-        // Look for a channel named "transcriptions"
-        const transcriptionChannel = guild.channels.cache.find(
-          (ch: any) => ch.name === 'transcriptions' && ch.isTextBased()
-        ) as TextChannel | undefined;
-
-        const targetChannel = transcriptionChannel ||
-          (await client.channels.fetch(options.textChannelId)) as TextChannel;
-
-        if (targetChannel?.isTextBased()) {
+        const targetChannel = await client.channels.fetch(options.textChannelId) as TextChannel;
+        if (targetChannel?.isTextBased?.()) {
           liveTranscription = new LiveTranscriptionService(targetChannel as TextChannel);
           console.log(`[WorkerManager] Live transcription will post to #${targetChannel.name}`);
         }
@@ -80,6 +102,10 @@ export class WorkerManager {
       console.error('[WorkerManager] Failed to set up live transcription:', err);
     }
 
+    const activeMarkerPath = path.join(sessionDir, 'session.active');
+    const callName = options.callName || `Call ${new Date().toISOString().slice(0, 10)}`;
+    this.writeActiveMarker(activeMarkerPath, options, callName, sessionDir);
+
     const worker = new VoiceWorker({
       guildId: options.guildId,
       channelId: options.channelId,
@@ -87,9 +113,13 @@ export class WorkerManager {
       liveTranscription: liveTranscription || undefined,
     });
 
-    await worker.start();
+    try {
+      await worker.start();
+    } catch (err) {
+      this.removeActiveMarker(activeMarkerPath);
+      throw err;
+    }
 
-    const callName = options.callName || `Call ${new Date().toISOString().slice(0, 10)}`;
     const session: RecordingSession = {
       ...options,
       callName,
@@ -97,6 +127,8 @@ export class WorkerManager {
       liveTranscription,
       startedAt: Date.now(),
       silenceCheckTimer: null,
+      sessionDir,
+      activeMarkerPath,
     };
     this.sessions.set(options.channelId, session);
 
@@ -130,6 +162,7 @@ export class WorkerManager {
 
     const result = await session.worker.stop();
     this.sessions.delete(channelId);
+    this.removeActiveMarker(session.activeMarkerPath);
 
     console.log(`[WorkerManager] Stopped recording in channel ${channelId}, ${result.files.length} files`);
 
@@ -164,25 +197,185 @@ export class WorkerManager {
     if (files.length === 0) {
       console.log('[WorkerManager] No audio files to transcribe');
       if (textChannel?.isTextBased?.()) {
-        await textChannel.send(`\u26a0\ufe0f Recording in <#${session.channelId}> ended with no audio captured.`);
+        await textChannel.send(`⚠️ Recording in <#${session.channelId}> ended with no audio captured.`);
       }
       return;
     }
 
-    // Merge all per-user PCM files into one combined WAV via proper mixdown
+    const artifacts = await this.prepareDeliveryArtifacts(stopResult, session, client);
+    await this.postDeliveryMessage(textChannel, session, artifacts, client);
+  }
+
+  private async prepareDeliveryArtifacts(
+    stopResult: StopResult,
+    session: RecordingSession,
+    client: any
+  ): Promise<DeliveryArtifacts> {
+    const { files, userMap, userStartTimes, sessionStartedAt } = stopResult;
     const sessionDir = stopResult.sessionDir;
     const combinedPcmPath = path.join(sessionDir, 'combined.pcm');
     const combinedWavPath = path.join(sessionDir, 'recording.wav');
 
     await this.mixdownPcmFiles(files, userStartTimes, sessionStartedAt, combinedPcmPath);
-
-    // Convert combined PCM to WAV (streaming)
     await this.pcmToWavStream(combinedPcmPath, combinedWavPath);
 
-    // Resolve user IDs to display names
+    const speakerNames = await this.resolveSpeakerNames(client, session.guildId, userMap);
+    const rosterHeader = this.buildRosterHeader(speakerNames);
+
+    const transcriptionService = new TranscriptionService(Config.DEEPGRAM_API_KEY);
+    const transcript = await this.transcribeWithRetry(transcriptionService, combinedWavPath, sessionDir);
+
+    let transcriptText = '';
+    let transcriptSrt = '';
+    let speakerCount = 0;
+    let transcriptionFailed = false;
+    let transcriptionError: string | undefined;
+    let txtPath: string | undefined;
+    let srtPath: string | undefined;
+    let metadataPath: string | undefined;
+    let summaryPath: string | undefined;
+    let summaryText: string | null = null;
+    let relayWarning = '';
+    let emailWarning = '';
+
+    if (transcript.ok) {
+      transcriptText = transcript.value.text;
+      transcriptSrt = transcript.value.srt;
+      speakerCount = new Set(transcript.value.segments.map((s) => s.speaker)).size;
+
+      srtPath = path.join(sessionDir, 'transcript.srt');
+      txtPath = path.join(sessionDir, 'transcript.txt');
+      metadataPath = path.join(sessionDir, 'metadata.json');
+      fs.writeFileSync(srtPath, transcriptSrt);
+      fs.writeFileSync(txtPath, rosterHeader + transcriptText);
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        guildId: session.guildId,
+        channelId: session.channelId,
+        requesterId: session.requesterId,
+        startedAt: new Date(session.startedAt).toISOString(),
+        stoppedAt: new Date().toISOString(),
+        speakers: Object.fromEntries(speakerNames),
+        segmentCount: transcript.value.segments.length,
+      }, null, 2));
+      console.log(`[WorkerManager] Transcripts saved to ${sessionDir}`);
+
+      summaryPath = path.join(sessionDir, 'summary.md');
+      try {
+        const participants = Array.from(speakerNames.values());
+        const generated = await SummaryService.summarize(rosterHeader + transcriptText, participants);
+        if (generated) {
+          const summaryDoc = `# ${session.callName} — Session Notes\n\n` +
+            `${rosterHeader}${generated}\n`;
+          summaryText = summaryDoc;
+          fs.writeFileSync(summaryPath, summaryDoc);
+          console.log(`[WorkerManager] Summary saved to ${summaryPath}`);
+        }
+      } catch (err) {
+        relayWarning = '⚠️ AI summary failed; transcript and audio are still available.';
+        console.error('[WorkerManager] Summary generation failed:', err);
+      }
+    } else {
+      transcriptionFailed = true;
+      transcriptionError = transcript.error;
+      speakerCount = speakerNames.size;
+      transcriptText = `Transcription failed. Audio is stored in this session directory: ${sessionDir}`;
+      transcriptSrt = '';
+      const markerPath = path.join(sessionDir, 'transcription-failed.txt');
+      fs.writeFileSync(
+        markerPath,
+        [
+          `Transcription failed for ${session.callName}`,
+          `Session: ${sessionDir}`,
+          `Audio: ${combinedWavPath}`,
+          `Time: ${new Date().toISOString()}`,
+          `Error: ${transcriptionError}`,
+        ].join('\n') + '\n',
+        'utf8'
+      );
+      metadataPath = path.join(sessionDir, 'metadata.json');
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        guildId: session.guildId,
+        channelId: session.channelId,
+        requesterId: session.requesterId,
+        startedAt: new Date(session.startedAt).toISOString(),
+        stoppedAt: new Date().toISOString(),
+        speakers: Object.fromEntries(speakerNames),
+        transcriptionFailed: true,
+        transcriptionError,
+      }, null, 2));
+      console.error(`[WorkerManager] Transcription failed after retry; marker saved to ${markerPath}`);
+    }
+
+    let r2Prefix = '';
+    let uploadWarning = '';
+    if (StorageService.isConfigured()) {
+      try {
+        const storage = new StorageService();
+        const uploadResult = await storage.uploadSession(sessionDir);
+        r2Prefix = uploadResult.prefix;
+        console.log(`[WorkerManager] Uploaded to R2: ${r2Prefix}`);
+      } catch (err) {
+        uploadWarning = `⚠️ Cloud upload failed; files remain on the server at \`${sessionDir}\`.`;
+        console.error('[WorkerManager] R2 upload failed:', err);
+      }
+    } else {
+      uploadWarning = `⚠️ Cloud storage is not configured; files remain on the server at \`${sessionDir}\`.`;
+      console.warn('[WorkerManager] R2 not configured, skipping cloud upload');
+    }
+
+    if (transcript.ok && Config.SUMMARY_EMAIL_TO && RelayClient.isConfigured()) {
+      try {
+        await this.emailSession(session, {
+          sessionDir,
+          combinedWavPath,
+          srtPath,
+          txtPath,
+          metadataPath,
+          summaryPath,
+          transcriptText,
+          transcriptSrt,
+          summaryText,
+          speakerNames,
+          speakerCount,
+          transcriptionFailed,
+          transcriptionError,
+          r2Prefix,
+          uploadWarning,
+          relayWarning,
+          emailWarning,
+        });
+        console.log(`[WorkerManager] Emailed summary to ${Config.SUMMARY_EMAIL_TO}`);
+      } catch (err) {
+        emailWarning = '⚠️ Email delivery failed; results are posted here only.';
+        console.error('[WorkerManager] Failed to email summary:', err);
+      }
+    }
+
+    return {
+      sessionDir,
+      combinedWavPath,
+      srtPath,
+      txtPath,
+      metadataPath,
+      summaryPath,
+      transcriptText,
+      transcriptSrt,
+      summaryText,
+      speakerNames,
+      speakerCount,
+      transcriptionFailed,
+      transcriptionError,
+      r2Prefix,
+      uploadWarning,
+      relayWarning,
+      emailWarning,
+    };
+  }
+
+  private async resolveSpeakerNames(client: any, guildId: string, userMap: Map<string, string>): Promise<Map<string, string>> {
     const speakerNames: Map<string, string> = new Map();
     try {
-      const guild = client.guilds.cache.get(session.guildId);
+      const guild = client.guilds.cache.get(guildId);
       if (guild) {
         for (const [, userId] of userMap) {
           try {
@@ -196,168 +389,138 @@ export class WorkerManager {
     } catch (err) {
       console.error('[WorkerManager] Error resolving speaker names:', err);
     }
+    return speakerNames;
+  }
 
-    // Transcribe with Deepgram Nova-3 (diarization handles speaker separation)
-    const transcriptionService = new TranscriptionService(Config.DEEPGRAM_API_KEY);
-    const transcript = await transcriptionService.transcribeSession(combinedWavPath);
-
-    // Build speaker roster header
+  private buildRosterHeader(speakerNames: Map<string, string>): string {
     const rosterLines = Array.from(speakerNames.values()).map((name) => `  - ${name}`);
-    const rosterHeader = rosterLines.length > 0
+    return rosterLines.length > 0
       ? `Participants:\n${rosterLines.join('\n')}\n\n---\n\n`
       : '';
+  }
 
-    // Write output files
-    const srtPath = path.join(sessionDir, 'transcript.srt');
-    const txtPath = path.join(sessionDir, 'transcript.txt');
-    const metadataPath = path.join(sessionDir, 'metadata.json');
-
-    fs.writeFileSync(srtPath, transcript.srt);
-    fs.writeFileSync(txtPath, rosterHeader + transcript.text);
-    fs.writeFileSync(metadataPath, JSON.stringify({
-      guildId: session.guildId,
-      channelId: session.channelId,
-      requesterId: session.requesterId,
-      startedAt: new Date(session.startedAt).toISOString(),
-      stoppedAt: new Date().toISOString(),
-      speakers: Object.fromEntries(speakerNames),
-      segmentCount: transcript.segments.length,
-    }, null, 2));
-
-    // Count unique speakers from segments
-    const speakerCount = new Set(transcript.segments.map((s) => s.speaker)).size;
-
-    console.log(`[WorkerManager] Transcripts saved to ${sessionDir}`);
-
-    // Generate an AI summary (study-group reading-discussion template).
-    // Optional: no-ops gracefully if SUMMARY_API_KEY is unset or on error.
-    let summaryText: string | null = null;
-    const summaryPath = path.join(sessionDir, 'summary.md');
-    try {
-      const participants = Array.from(speakerNames.values());
-      summaryText = await SummaryService.summarize(rosterHeader + transcript.text, participants);
-      if (summaryText) {
-        const summaryDoc = `# ${session.callName} — Session Notes\n\n` +
-          `${rosterHeader}${summaryText}\n`;
-        summaryText = summaryDoc;
-        fs.writeFileSync(summaryPath, summaryDoc);
-        console.log(`[WorkerManager] Summary saved to ${summaryPath}`);
-      }
-    } catch (err) {
-      console.error('[WorkerManager] Summary generation failed:', err);
-    }
-
-    // Upload to R2 cloud storage
-    let r2Prefix = '';
-    if (StorageService.isConfigured()) {
+  private async transcribeWithRetry(
+    transcriptionService: TranscriptionService,
+    combinedWavPath: string,
+    sessionDir: string
+  ): Promise<
+    | { ok: true; value: Awaited<ReturnType<TranscriptionService['transcribeSession']>> }
+    | { ok: false; error: string }
+  > {
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const storage = new StorageService();
-        const uploadResult = await storage.uploadSession(sessionDir);
-        r2Prefix = uploadResult.prefix;
-        console.log(`[WorkerManager] Uploaded to R2: ${r2Prefix}`);
-      } catch (err) {
-        console.error('[WorkerManager] R2 upload failed:', err);
-      }
-    } else {
-      console.warn('[WorkerManager] R2 not configured, skipping cloud upload');
-    }
-
-    // Email the summary + transcript to the configured recipient via the relay.
-    // The relay email path is plain-text only (no attachments), so we put the
-    // summary in the body and link the uploaded summary.md + transcript files.
-    if (Config.SUMMARY_EMAIL_TO && RelayClient.isConfigured()) {
-      try {
-        const durSec = Math.round((Date.now() - session.startedAt) / 1000);
-        const durStr = `${Math.floor(durSec / 60)}m ${durSec % 60}s`;
-        const participantList = Array.from(speakerNames.values()).join(', ') || '(names not detected)';
-        const publicBase = Config.R2_PUBLIC_URL;
-        let links = '';
-        if (r2Prefix && publicBase) {
-          links = `\n\nDownloads:\n` +
-            (summaryText ? `  Summary (.md): ${publicBase}/${r2Prefix}/summary.md\n` : '') +
-            `  Transcript (.txt): ${publicBase}/${r2Prefix}/transcript.txt\n` +
-            `  Subtitles (.srt): ${publicBase}/${r2Prefix}/transcript.srt\n` +
-            `  Audio (.wav): ${publicBase}/${r2Prefix}/recording.wav`;
+        if (attempt > 1) {
+          console.log('[WorkerManager] Retrying Deepgram transcription after backoff');
+          await WorkerManager.sleep(10_000);
         }
-        const bodyParts = [
-          `${session.callName}`,
-          ``,
-          `Duration: ${durStr}`,
-          `Speakers: ${speakerCount}`,
-          `Participants: ${participantList}`,
-          links ? links.trimStart() : '',
-          ``,
-          `---`,
-          ``,
-          summaryText ? summaryText : '(No AI summary was generated for this session.)',
-          ``,
-          `---`,
-          `Full transcript:`,
-          ``,
-          transcript.text,
-        ];
-        await RelayClient.email(
-          Config.SUMMARY_EMAIL_TO,
-          `[${Config.BOT_NAME}] ${session.callName} — notes & transcript`,
-          bodyParts.join('\n')
-        );
-        console.log(`[WorkerManager] Emailed summary to ${Config.SUMMARY_EMAIL_TO}`);
+        return { ok: true, value: await transcriptionService.transcribeSession(combinedWavPath) };
       } catch (err) {
-        console.error('[WorkerManager] Failed to email summary:', err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[WorkerManager] Deepgram transcription attempt ${attempt}/2 failed for ${sessionDir}:`, err);
+        if (attempt === 2) return { ok: false, error: msg };
+      }
+    }
+    return { ok: false, error: 'unknown transcription failure' };
+  }
+
+  private async emailSession(session: RecordingSession, artifacts: DeliveryArtifacts): Promise<void> {
+    const durSec = Math.round((Date.now() - session.startedAt) / 1000);
+    const durStr = `${Math.floor(durSec / 60)}m ${durSec % 60}s`;
+    const participantList = Array.from(artifacts.speakerNames.values()).join(', ') || '(names not detected)';
+    const publicBase = Config.R2_PUBLIC_URL;
+    let links = '';
+    if (artifacts.r2Prefix && publicBase) {
+      links = `\n\nDownloads:\n` +
+        (artifacts.summaryText ? `  Summary (.md): ${publicBase}/${artifacts.r2Prefix}/summary.md\n` : '') +
+        `  Transcript (.txt): ${publicBase}/${artifacts.r2Prefix}/transcript.txt\n` +
+        `  Subtitles (.srt): ${publicBase}/${artifacts.r2Prefix}/transcript.srt\n` +
+        `  Audio (.wav): ${publicBase}/${artifacts.r2Prefix}/recording.wav`;
+    }
+    const bodyParts = [
+      `${session.callName}`,
+      ``,
+      `Duration: ${durStr}`,
+      `Speakers: ${artifacts.speakerCount}`,
+      `Participants: ${participantList}`,
+      links ? links.trimStart() : '',
+      artifacts.uploadWarning || '',
+      artifacts.relayWarning || '',
+      ``,
+      `---`,
+      ``,
+      artifacts.summaryText ? artifacts.summaryText : '(No AI summary was generated for this session.)',
+      ``,
+      `---`,
+      `Full transcript:`,
+      ``,
+      artifacts.transcriptText,
+    ].filter((part) => part !== '');
+    await RelayClient.email(
+      Config.SUMMARY_EMAIL_TO,
+      `[${Config.BOT_NAME}] ${session.callName} — notes & transcript`,
+      bodyParts.join('\n')
+    );
+  }
+
+  private async postDeliveryMessage(
+    textChannel: any,
+    session: RecordingSession,
+    artifacts: DeliveryArtifacts,
+    client: any
+  ): Promise<void> {
+    const durationSec = Math.round((Date.now() - session.startedAt) / 1000);
+    const mins = Math.floor(durationSec / 60);
+    const secs = durationSec % 60;
+    const warnings = [artifacts.uploadWarning, artifacts.relayWarning, artifacts.emailWarning].filter(Boolean);
+
+    if (artifacts.transcriptionFailed) {
+      warnings.unshift(`⚠️ Deepgram transcription failed after retry; audio is preserved at \`${artifacts.sessionDir}\`.`);
+    }
+
+    const attachments: NonNullable<MessageCreateOptions['files']>[number][] = [];
+    if (!artifacts.transcriptionFailed) {
+      attachments.push(
+        { attachment: Buffer.from(artifacts.transcriptText), name: 'transcript.txt' },
+        { attachment: Buffer.from(artifacts.transcriptSrt), name: 'transcript.srt' },
+      );
+      if (artifacts.summaryText) attachments.unshift({ attachment: Buffer.from(artifacts.summaryText), name: 'summary.md' });
+    }
+
+    if (fs.existsSync(artifacts.combinedWavPath)) {
+      const wavSize = fs.statSync(artifacts.combinedWavPath).size;
+      if (wavSize < 25 * 1024 * 1024) {
+        attachments.push({ attachment: artifacts.combinedWavPath, name: 'recording.wav' });
+      } else {
+        console.log(`[WorkerManager] Audio file too large for Discord (${(wavSize / 1024 / 1024).toFixed(1)}MB), skipping attachment`);
       }
     }
 
-    // Post to the text channel where /record was invoked
+    let r2Note = '';
+    if (artifacts.r2Prefix) {
+      const publicBase = Config.R2_PUBLIC_URL;
+      if (publicBase) {
+        r2Note = `\n\n📁 **Recordings:**\n` +
+          (artifacts.summaryText ? `📝 Summary: ${publicBase}/${artifacts.r2Prefix}/summary.md\n` : '') +
+          (artifacts.transcriptionFailed ? '' : `📄 Transcript: ${publicBase}/${artifacts.r2Prefix}/transcript.txt\n`) +
+          (artifacts.transcriptionFailed ? '' : `🎬 Subtitles: ${publicBase}/${artifacts.r2Prefix}/transcript.srt\n`) +
+          `🔊 Audio: ${publicBase}/${artifacts.r2Prefix}/recording.wav`;
+      } else {
+        r2Note = `\n**Archived:** \`${artifacts.r2Prefix}\``;
+      }
+    }
+
+    const statusTitle = artifacts.transcriptionFailed ? 'recording saved; transcription failed' : 'transcription complete';
+    const warningNote = warnings.length ? `\n\n${warnings.join('\n')}` : '';
+    const content = `📝 **${session.callName}** — ${statusTitle} for <#${session.channelId}>\n\n` +
+      `**Duration:** ${mins}m ${secs}s\n` +
+      `**Speakers:** ${artifacts.speakerCount}\n` +
+      `**Requested by:** <@${session.requesterId}>${r2Note}${warningNote}`;
+
     if (textChannel?.isTextBased?.()) {
-      const durationSec = Math.round((Date.now() - session.startedAt) / 1000);
-      const mins = Math.floor(durationSec / 60);
-      const secs = durationSec % 60;
-
-      const attachments: any[] = [
-        { attachment: Buffer.from(transcript.text), name: 'transcript.txt' },
-        { attachment: Buffer.from(transcript.srt), name: 'transcript.srt' },
-      ];
-
-      // Attach the AI summary document if one was generated.
-      if (summaryText) {
-        attachments.unshift({ attachment: Buffer.from(summaryText), name: 'summary.md' });
-      }
-
-      // Attach the audio file if it's under 25MB (Discord limit)
-      if (fs.existsSync(combinedWavPath)) {
-        const wavSize = fs.statSync(combinedWavPath).size;
-        if (wavSize < 25 * 1024 * 1024) {
-          attachments.push({ attachment: combinedWavPath, name: 'recording.wav' });
-        } else {
-          console.log(`[WorkerManager] Audio file too large for Discord (${(wavSize / 1024 / 1024).toFixed(1)}MB), skipping attachment`);
-        }
-      }
-
       try {
-        let r2Note = '';
-        if (r2Prefix) {
-          const publicBase = Config.R2_PUBLIC_URL;
-          if (publicBase) {
-            r2Note = `\n\n📁 **Recordings:**\n` +
-              (summaryText ? `📝 Summary: ${publicBase}/${r2Prefix}/summary.md\n` : '') +
-              `🔊 Audio: ${publicBase}/${r2Prefix}/recording.wav\n` +
-              `📄 Transcript: ${publicBase}/${r2Prefix}/transcript.txt\n` +
-              `🎬 Subtitles: ${publicBase}/${r2Prefix}/transcript.srt`;
-          } else {
-            r2Note = `\n**Archived:** \`${r2Prefix}\``;
-          }
-        }
-        // Header message with metadata, R2 links, and file attachments.
-        await textChannel.send({
-          content: `\ud83d\udcdd **${session.callName}** — transcription complete for <#${session.channelId}>\n\n**Duration:** ${mins}m ${secs}s\n**Speakers:** ${speakerCount}\n**Requested by:** <@${session.requesterId}>${r2Note}`,
-          files: attachments,
-        });
-
-        // Post the FULL summary inline, split across as many messages as needed
-        // (Discord caps each message at 2000 chars). summary.md remains attached
-        // above for download, but readers no longer have to open it.
-        if (summaryText) {
-          const chunks = WorkerManager.chunkText(summaryText);
+        await textChannel.send({ content, files: attachments });
+        if (artifacts.summaryText) {
+          const chunks = WorkerManager.chunkText(artifacts.summaryText);
           for (let i = 0; i < chunks.length; i++) {
             const suffix = chunks.length > 1 ? `\n\n*(${i + 1}/${chunks.length})*` : '';
             await textChannel.send({ content: chunks[i] + suffix });
@@ -370,17 +533,15 @@ export class WorkerManager {
       console.warn('[WorkerManager] Text channel not available, falling back to DM');
       try {
         const user = await client.users.fetch(session.requesterId);
-        await user.send({
-          content: `\ud83d\udcdd **Transcription complete** for <#${session.channelId}>`,
-          files: [
-            { attachment: Buffer.from(transcript.text), name: 'transcript.txt' },
-            { attachment: Buffer.from(transcript.srt), name: 'transcript.srt' },
-          ],
-        });
+        await user.send({ content, files: attachments });
       } catch (err) {
         console.error('[WorkerManager] Failed to DM requester:', err);
       }
     }
+  }
+
+  private static sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -609,8 +770,76 @@ export class WorkerManager {
     });
   }
 
+  async stopAllActiveSessions(reason: string): Promise<void> {
+    const sessions = Array.from(this.sessions.values());
+    console.log(`[WorkerManager] Stopping ${sessions.length} active session(s): ${reason}`);
+    for (const session of sessions) {
+      try {
+        await this.stopRecording(session.channelId);
+      } catch (err) {
+        console.error(`[WorkerManager] Failed to stop session ${session.channelId} during ${reason}:`, err);
+      }
+    }
+  }
+
+  sweepOrphanSessions(): OrphanSessionInfo[] {
+    const root = Config.RECORDINGS_DIR;
+    const orphans: OrphanSessionInfo[] = [];
+    if (!fs.existsSync(root)) return orphans;
+
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const sessionDir = path.join(root, entry.name);
+      const files = fs.readdirSync(sessionDir);
+      const audioFiles = files.filter((f) => f.endsWith('.wav') || f.endsWith('.pcm'));
+      const transcriptFiles = files.filter((f) => f === 'transcript.txt' || f === 'transcript.srt');
+      const activeMarker = files.includes('session.active');
+      if (activeMarker || (audioFiles.length > 0 && transcriptFiles.length === 0)) {
+        orphans.push({ sessionDir, activeMarker, audioFiles, transcriptFiles });
+      }
+    }
+
+    for (const orphan of orphans) {
+      console.warn(
+        `[Recovery] Orphan recording dir detected: ${orphan.sessionDir} ` +
+        `(activeMarker=${orphan.activeMarker}, audio=${orphan.audioFiles.length}, transcripts=${orphan.transcriptFiles.length})`
+      );
+    }
+    return orphans;
+  }
+
+  private writeActiveMarker(
+    markerPath: string,
+    options: StartRecordingOptions,
+    callName: string,
+    sessionDir: string
+  ): void {
+    fs.writeFileSync(markerPath, JSON.stringify({
+      guildId: options.guildId,
+      channelId: options.channelId,
+      requesterId: options.requesterId,
+      textChannelId: options.textChannelId,
+      callName,
+      sessionDir,
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+    }, null, 2) + '\n', 'utf8');
+  }
+
+  private removeActiveMarker(markerPath: string): void {
+    try {
+      if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+    } catch (err) {
+      console.error(`[WorkerManager] Failed to remove active marker ${markerPath}:`, err);
+    }
+  }
+
   isRecording(channelId: string): boolean {
     return this.sessions.has(channelId);
+  }
+
+  getSession(channelId: string): RecordingSession | undefined {
+    return this.sessions.get(channelId);
   }
 
   getActiveSessions(): SessionInfo[] {
@@ -692,6 +921,7 @@ export class WorkerManager {
     // Stop the worker (disconnects from voice)
     const result = await session.worker.stop();
     this.sessions.delete(channelId);
+    this.removeActiveMarker(session.activeMarkerPath);
     const sessionDir = result.sessionDir;
 
     console.log(

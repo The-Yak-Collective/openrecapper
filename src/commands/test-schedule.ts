@@ -2,6 +2,7 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   AutocompleteInteraction,
+  PermissionFlagsBits,
 } from 'discord.js';
 import { triggerScheduledRecording } from '../services/scheduler';
 import { getSchedule, getSchedulesForGuild } from '../services/schedule-store';
@@ -11,6 +12,7 @@ export const testScheduleCommand = {
   data: new SlashCommandBuilder()
     .setName('test-schedule')
     .setDescription('Manually trigger a scheduled recording (for testing)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addStringOption((o) =>
       o
         .setName('schedule')
@@ -26,6 +28,10 @@ export const testScheduleCommand = {
   async execute(interaction: ChatInputCommandInteraction) {
     if (!interaction.guildId) {
       await interaction.reply({ content: '❌ This command only works in servers.', ephemeral: true });
+      return;
+    }
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '❌ You need Manage Server permission to trigger schedules.', ephemeral: true });
       return;
     }
 
@@ -61,8 +67,9 @@ export const testScheduleCommand = {
     try {
       const result = await triggerScheduledRecording(scheduleId);
       await interaction.editReply(`✅ ${result}`);
-    } catch (error: any) {
-      await interaction.editReply(`❌ Failed to trigger scheduled recording: ${error.message}`);
+    } catch (error) {
+      console.error('[Command:/test-schedule] Failed to trigger scheduled recording:', error);
+      await interaction.editReply('❌ Failed to trigger scheduled recording. Check the bot logs for details.');
     }
   },
 };

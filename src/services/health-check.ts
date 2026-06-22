@@ -1,4 +1,5 @@
 import { Config } from '../config';
+import { StorageService } from './storage-service';
 
 export interface HealthResult {
   ok: boolean;
@@ -42,6 +43,19 @@ export async function checkDeepgram(): Promise<HealthResult> {
  * summaries and email degrade silently while Discord transcripts still post.
  * Skipped (treated as OK) when the relay isn't configured at all.
  */
+export async function checkR2(): Promise<HealthResult> {
+  if (!StorageService.isConfigured()) {
+    return { ok: true, detail: 'R2 not configured — cloud archival disabled (skipped)' };
+  }
+  try {
+    const storage = new StorageService();
+    await storage.probe();
+    return { ok: true, detail: `R2 bucket reachable: ${Config.R2_BUCKET}` };
+  } catch (err: any) {
+    return { ok: false, detail: `Could not reach R2 bucket ${Config.R2_BUCKET}: ${err?.message || err}` };
+  }
+}
+
 export async function checkRelay(): Promise<HealthResult> {
   if (!Config.RELAY_TOKEN || !Config.RELAY_URL) {
     return { ok: true, detail: 'Relay not configured — AI summary/email disabled (skipped)' };
@@ -68,7 +82,7 @@ export async function checkRelay(): Promise<HealthResult> {
  * reported in a single DM if either fails.
  */
 export async function runStartupHealthChecks(client: any): Promise<void> {
-  const [dg, relay] = await Promise.all([checkDeepgram(), checkRelay()]);
+  const [dg, relay, r2] = await Promise.all([checkDeepgram(), checkRelay(), checkR2()]);
 
   if (dg.ok) console.log(`[HealthCheck] ✅ ${dg.detail}`);
   else {
@@ -81,7 +95,10 @@ export async function runStartupHealthChecks(client: any): Promise<void> {
   if (relay.ok) console.log(`[HealthCheck] ✅ ${relay.detail}`);
   else console.error(`[HealthCheck] ⚠️  RELAY CHECK FAILED: ${relay.detail}`);
 
-  if (dg.ok && relay.ok) return;
+  if (r2.ok) console.log(`[HealthCheck] ✅ ${r2.detail}`);
+  else console.error(`[HealthCheck] ⚠️  R2 CHECK FAILED: ${r2.detail}`);
+
+  if (dg.ok && relay.ok && r2.ok) return;
 
   const userId = Config.ALERT_DISCORD_USER_ID;
   if (!userId) return;
@@ -99,6 +116,12 @@ export async function runStartupHealthChecks(client: any): Promise<void> {
       `**⚠️ Relay (degraded):** ${relay.detail}\n` +
       `Discord transcripts will still post, but AI summaries + email won't. ` +
       `Check that the relay service is running and reachable at \`RELAY_URL\`.`
+    );
+  }
+  if (!r2.ok) {
+    lines.push(
+      `**⚠️ R2 (degraded):** ${r2.detail}\n` +
+      `Discord transcripts may still post, but cloud audio/transcript links may be unavailable.`
     );
   }
 

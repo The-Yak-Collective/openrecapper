@@ -17,26 +17,35 @@ export class RelayClient {
   }
 
   private static async post(path: string, body: any, timeoutMs: number): Promise<any> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(`${Config.RELAY_URL}${path}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Relay-Token': Config.RELAY_TOKEN,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const data: any = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(`relay ${path} ${res.status}: ${data?.error || 'unknown error'}`);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${Config.RELAY_URL}${path}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Relay-Token': Config.RELAY_TOKEN,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const data: any = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(`relay ${path} ${res.status}: ${data?.error || 'unknown error'}`);
+        }
+        return data;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 3) break;
+        console.warn(`[RelayClient] ${path} attempt ${attempt}/3 failed; retrying:`, err);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+      } finally {
+        clearTimeout(timer);
       }
-      return data;
-    } finally {
-      clearTimeout(timer);
     }
+    throw lastError;
   }
 
   /** Generate a summary via the LLM Gateway. Returns the Markdown text. */

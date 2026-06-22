@@ -8,7 +8,7 @@ import { grapevineCommand } from './commands/grapevine';
 import { scheduleCommand } from './commands/schedule';
 import { WorkerManager } from './services/worker-manager';
 import { testScheduleCommand } from './commands/test-schedule';
-import { startScheduler } from './services/scheduler';
+import { startScheduler, stopScheduler } from './services/scheduler';
 import { loadGrapevineConfig, handleReactionAdd } from './services/grapevine-service';
 import { runStartupHealthChecks } from './services/health-check';
 import { startCleanupScheduler } from './services/recording-cleanup';
@@ -52,6 +52,7 @@ setClient(client);
 
 client.once(Events.ClientReady, (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
+  WorkerManager.getInstance().sweepOrphanSessions();
   startScheduler();
   loadGrapevineConfig();
   runStartupHealthChecks(c).catch((err) => console.error('[HealthCheck] Unexpected error:', err));
@@ -132,5 +133,25 @@ client.on(Events.VoiceStateUpdate, async (oldState: VoiceState, newState: VoiceS
     stoppingChannels.delete(channelId);
   }
 });
+
+let shuttingDown = false;
+async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] Received ${signal}; stopping scheduler and active recordings before exit`);
+  try {
+    stopScheduler();
+    await WorkerManager.getInstance().stopAllActiveSessions(signal);
+    await client.destroy();
+    console.log('[Shutdown] Graceful shutdown complete');
+    process.exit(0);
+  } catch (err) {
+    console.error('[Shutdown] Graceful shutdown failed:', err);
+    process.exit(1);
+  }
+}
+
+process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 
 client.login(Config.DISCORD_TOKEN);

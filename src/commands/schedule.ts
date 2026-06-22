@@ -35,7 +35,7 @@ function isValidTimezone(tz: string): boolean {
 function describeSchedule(s: Schedule): string {
   const when = describeCron(s.cron, s.timezone);
   const status = s.paused ? ' ⏸ **paused**' : '';
-  const text = s.textChannelId ? `<#${s.textChannelId}>` : 'auto (#transcriptions)';
+  const text = s.textChannelId ? `<#${s.textChannelId}>` : '⚠️ missing — edit text_channel before it can fire';
   return (
     `**${s.name}** \`${s.id}\` — ${when}${status}\n` +
     `   • voice <#${s.voiceChannelId}> → text ${text}`
@@ -111,7 +111,7 @@ export const scheduleCommand = {
         .addChannelOption((o) =>
           o
             .setName('text_channel')
-            .setDescription('Where to post results (default: auto-find #transcriptions)')
+            .setDescription('Where to post live transcript and results (default: this channel)')
             .addChannelTypes(ChannelType.GuildText)
             .setRequired(false),
         )
@@ -228,11 +228,12 @@ export const scheduleCommand = {
         name = `${parsed.days.map(dayLabel).join('/')} call`;
       }
 
+      const textChannelId = text?.id || interaction.channelId;
       const schedule = createSchedule({
         name,
         guildId: interaction.guildId,
         voiceChannelId: voice.id,
-        textChannelId: text?.id,
+        textChannelId,
         cron,
         timezone,
         paused: false,
