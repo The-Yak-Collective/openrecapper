@@ -119,7 +119,7 @@ The bot can auto-join and record standing calls on a schedule, managed at
 runtime with the **`/schedule`** command (requires Manage Server):
 
 ```
-/schedule add voice_channel:#standup days:mon,fri time:11:15
+/schedule add voice_channel:#standup days:mon,fri time:11:15 text_channel:#transcriptions
 /schedule list
 /schedule edit | remove | pause | resume
 ```
@@ -127,7 +127,9 @@ runtime with the **`/schedule`** command (requires Manage Server):
 `days` accepts names/aliases (`mon,fri`, `weekdays`, `weekends`, `daily`),
 `time` is 24-hour `HH:MM`, and `timezone` is any IANA zone (default
 `America/New_York`). Schedules persist to `data/schedules.json` and survive
-restarts. Use `/test-schedule` to trigger one manually.
+restarts. Each active schedule must have an explicit text channel for live
+transcript/results (`/schedule add text_channel:...` or `/schedule edit ...
+text_channel:...`). Use `/test-schedule` to trigger one manually.
 
 The legacy `SCHEDULED_*` env vars (see `.env.example`) are still honored as a
 **one-time seed**: if no `data/schedules.json` exists on first start, they create

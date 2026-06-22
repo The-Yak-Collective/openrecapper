@@ -63,7 +63,7 @@ export async function triggerScheduledRecording(id: string): Promise<string> {
   }
 
   if (!schedule.textChannelId) {
-    throw new Error('Schedule has no text channel configured; edit it with `/schedule edit text_channel:`');
+    throw new Error(`Schedule "${schedule.name}" [${schedule.id}] has no text channel configured; edit it with ${scheduleEditHint(schedule)}`);
   }
 
   const textChannel = await client.channels.fetch(schedule.textChannelId).catch(() => null) as TextChannel | null;
@@ -92,21 +92,45 @@ export async function triggerScheduledRecording(id: string): Promise<string> {
 
 /**
  * (Re)build the live cron task for a single schedule. Stops any existing task
- * for that id, then creates a fresh one unless the schedule is paused or its
- * cron is invalid. This is the only place tasks are created.
+ * for that id, then creates a fresh one unless the schedule is paused, missing
+ * required routing config, or has invalid cron. This is the only place tasks are created.
  */
-function syncTask(schedule: Schedule): void {
+export function scheduleEditHint(schedule: Pick<Schedule, 'id'>): string {
+  return `/schedule edit schedule:${schedule.id} text_channel:#transcriptions`;
+}
+
+export function invalidScheduleReason(schedule: Schedule): string | null {
+  if (schedule.paused) return 'paused';
+  if (!schedule.textChannelId) return `missing text channel — set one with ${scheduleEditHint(schedule)}`;
+  if (!cron.validate(schedule.cron)) return `invalid cron: ${schedule.cron}`;
+  return null;
+}
+
+function backfillLegacyTextChannels(): void {
+  if (!LEGACY_TEXT_CHANNEL_ID) return;
+
+  const missingTextChannel = getSchedules().filter((schedule) => !schedule.textChannelId);
+  if (missingTextChannel.length === 0) return;
+
+  for (const schedule of missingTextChannel) {
+    updateSchedule(schedule.id, { textChannelId: LEGACY_TEXT_CHANNEL_ID });
+  }
+
+  console.warn(
+    `[Scheduler] Backfilled textChannelId=${LEGACY_TEXT_CHANNEL_ID} for ${missingTextChannel.length} legacy schedule(s) ` +
+      'from SCHEDULED_TEXT_CHANNEL_ID. data/schedules.json remains canonical; future changes should use /schedule edit.',
+  );
+}
+
+function syncTask(schedule: Schedule): boolean {
   // Tear down any existing task for this id first.
   removeTask(schedule.id);
 
-  if (schedule.paused) {
-    console.log(`[Scheduler] Schedule "${schedule.name}" [${schedule.id}] is paused — not scheduling.`);
-    return;
-  }
-
-  if (!cron.validate(schedule.cron)) {
-    console.error(`[Scheduler] Invalid cron for "${schedule.name}" [${schedule.id}]: ${schedule.cron} — skipping.`);
-    return;
+  const invalidReason = invalidScheduleReason(schedule);
+  if (invalidReason) {
+    const level = schedule.paused ? 'log' : 'error';
+    console[level](`[Scheduler] Schedule "${schedule.name}" [${schedule.id}] is not active: ${invalidReason}.`);
+    return false;
   }
 
   const task = cron.schedule(
@@ -128,6 +152,7 @@ function syncTask(schedule: Schedule): void {
   console.log(
     `[Scheduler] Scheduled "${schedule.name}" [${schedule.id}] cron="${schedule.cron}" (timezone: ${schedule.timezone}) — guild=${schedule.guildId} voice=${schedule.voiceChannelId}`,
   );
+  return true;
 }
 
 /** Stop + drop the live task for a schedule id (if any). */
@@ -172,13 +197,16 @@ export function startScheduler(): void {
     console.log(`[Scheduler] Loaded ${getSchedules().length} schedule(s) from store.`);
   }
 
+  backfillLegacyTextChannels();
+
+  let schedulable = 0;
   for (const schedule of getSchedules()) {
-    syncTask(schedule);
+    if (syncTask(schedule)) schedulable++;
   }
 
   const active = tasks.size;
   const total = getSchedules().length;
-  console.log(`[Scheduler] Active cron tasks: ${active}/${total} (${total - active} paused or invalid).`);
+  console.log(`[Scheduler] Active cron tasks: ${active}/${total} (${total - schedulable} paused or invalid).`);
 }
 
 // ── Mutators ────────────────────────────────────────────────────────────────

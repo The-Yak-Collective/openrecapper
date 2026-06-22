@@ -1,5 +1,7 @@
 import { Config } from '../config';
 import { StorageService } from './storage-service';
+import { getSchedules } from './schedule-store';
+import { invalidScheduleReason } from './scheduler';
 
 export interface HealthResult {
   ok: boolean;
@@ -56,6 +58,18 @@ export async function checkR2(): Promise<HealthResult> {
   }
 }
 
+export function checkSchedules(): HealthResult {
+  const problems = getSchedules()
+    .map((schedule) => {
+      const reason = invalidScheduleReason(schedule);
+      return reason && reason !== 'paused' ? `**${schedule.name}** \`${schedule.id}\`: ${reason}` : '';
+    })
+    .filter(Boolean);
+
+  if (problems.length === 0) return { ok: true, detail: 'All active schedules have required config' };
+  return { ok: false, detail: problems.join('; ') };
+}
+
 export async function checkRelay(): Promise<HealthResult> {
   if (!Config.RELAY_TOKEN || !Config.RELAY_URL) {
     return { ok: true, detail: 'Relay not configured — AI summary/email disabled (skipped)' };
@@ -77,12 +91,13 @@ export async function checkRelay(): Promise<HealthResult> {
  * if anything is wrong, so failures surface immediately on boot rather than
  * silently failing mid-call.
  *
- * Deepgram is CRITICAL (no transcription without it). The relay is DEGRADED
- * (transcripts still post, but AI summary + email won't work). Both are
- * reported in a single DM if either fails.
+ * Deepgram is CRITICAL (no transcription without it). Relay/R2 are DEGRADED.
+ * Schedule config warnings are reported too, so an active schedule missing its
+ * text channel is visible at startup instead of only at cron fire time.
  */
 export async function runStartupHealthChecks(client: any): Promise<void> {
   const [dg, relay, r2] = await Promise.all([checkDeepgram(), checkRelay(), checkR2()]);
+  const schedules = checkSchedules();
 
   if (dg.ok) console.log(`[HealthCheck] ✅ ${dg.detail}`);
   else {
@@ -98,7 +113,10 @@ export async function runStartupHealthChecks(client: any): Promise<void> {
   if (r2.ok) console.log(`[HealthCheck] ✅ ${r2.detail}`);
   else console.error(`[HealthCheck] ⚠️  R2 CHECK FAILED: ${r2.detail}`);
 
-  if (dg.ok && relay.ok && r2.ok) return;
+  if (schedules.ok) console.log(`[HealthCheck] ✅ Schedules: ${schedules.detail}`);
+  else console.error(`[HealthCheck] ⚠️  SCHEDULE CHECK FAILED: ${schedules.detail}`);
+
+  if (dg.ok && relay.ok && r2.ok && schedules.ok) return;
 
   const userId = Config.ALERT_DISCORD_USER_ID;
   if (!userId) return;
@@ -122,6 +140,12 @@ export async function runStartupHealthChecks(client: any): Promise<void> {
     lines.push(
       `**⚠️ R2 (degraded):** ${r2.detail}\n` +
       `Discord transcripts may still post, but cloud audio/transcript links may be unavailable.`
+    );
+  }
+  if (!schedules.ok) {
+    lines.push(
+      `**⚠️ Schedules:** ${schedules.detail}\n` +
+      `Affected scheduled recordings will not start until fixed with \`/schedule edit\`.`
     );
   }
 

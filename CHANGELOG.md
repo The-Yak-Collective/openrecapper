@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Active schedules missing `textChannelId` are no longer silently armed until
+  cron fire time: startup now logs/DMs a schedule health warning and skips those
+  invalid tasks with a concrete `/schedule edit ... text_channel:` hint.
+- Legacy schedules can backfill `textChannelId` from `SCHEDULED_TEXT_CHANNEL_ID`
+  if that env var is still present.
+
+
 ## [1.1.1] - 2026-06-22
 
 Security and reliability hardening patch following the 2026-06-22 review.
