@@ -1,5 +1,26 @@
 # Discord Bot Setup Guide
 
+## 0. Prerequisites
+
+The bot records and mixes audio, which requires native tooling on the host:
+
+- **Node.js** 20+ and npm
+- **ffmpeg** (audio mixdown)
+- A C/C++ build toolchain (`make`, `gcc`/`g++`, `python3`) — needed to
+  compile native modules (`@discordjs/opus`, `sodium-native`, `prism-media`)
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt-get update && sudo apt-get install -y ffmpeg build-essential python3
+```
+
+Then install dependencies:
+
+```bash
+npm install
+```
+
 ## 1. Create a Discord Application
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
@@ -11,8 +32,14 @@
 1. In your application, go to **Bot** (left sidebar)
 2. Click **"Reset Token"** → copy the token → this is your `DISCORD_TOKEN`
 3. Under **Privileged Gateway Intents**, enable:
-   - ✅ **Server Members Intent** (to resolve display names)
-   - ✅ **Message Content Intent** (optional, for future features)
+   - ✅ **Message Content Intent** — **required**. The bot requests the
+     `MessageContent` gateway intent at startup (used by the grapevine
+     message-forwarding feature). If this is disabled in the portal the bot
+     will fail to log in.
+
+> The bot does **not** request the privileged Server Members intent — display
+> names are resolved with individual `guild.members.fetch()` calls, which do
+> not require it. You can leave Server Members Intent off.
 
 > ⚠️ **Never share or commit your bot token.** If leaked, immediately reset it in the Developer Portal.
 
@@ -73,14 +100,33 @@ Transcription (both live and batch) uses [Deepgram](https://deepgram.com/).
 ## 6. Register Slash Commands & Start
 
 ```bash
-# Register /record, /stop, /status with Discord
+# Register slash commands with Discord
 npm run register
 
-# Start the bot
+# Start the bot (development, runs TypeScript directly via tsx)
 npm run dev
 ```
 
+This registers **6 slash commands** globally:
+`/record`, `/stop`, `/status`, `/schedule`, `/grapevine`, `/test-schedule`.
+
+> ⚠️ The recording commands (`/record`, `/stop`, `/schedule`) require the
+> **invoking user** to have the **Manage Server** permission. Regular members
+> will not see or be able to run them.
+
 You should see: `✅ Logged in as YourBot#1234`
+
+### Production
+
+For a real deployment, build once and run the compiled output:
+
+```bash
+npm run build
+npm start
+```
+
+Consider running it under a process manager (systemd, pm2, etc.) so it
+restarts on failure and survives reboots.
 
 ## 7. Token Management Best Practices
 
@@ -96,6 +142,7 @@ You should see: `✅ Logged in as YourBot#1234`
 |---|---|
 | "Missing Access" | Bot lacks permissions — re-invite with correct perms |
 | "Unknown Channel" | Bot isn't in the server with that channel |
-| Commands not showing | Run `npm run register` and wait ~1 hour for global propagation |
+| Commands not showing | Run `npm run register` and wait ~1 hour for global propagation. Note recording commands only appear to users with **Manage Server**. |
+| Bot won't log in / disconnects immediately | Enable the **Message Content Intent** in the Developer Portal (it is required). |
 | No audio captured | Ensure "Use Voice Activity" perm + users aren't server-muted |
 | Transcription errors | Check `DEEPGRAM_API_KEY` + Deepgram account billing status |
