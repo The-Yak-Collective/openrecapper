@@ -7,3 +7,9 @@ data/
 *.wav
 grapevine-routes.json
 NEXT-SESSION-*.md
+.shelley-orchestrator/
+.context/
+.shared/
+.shelley-scheduled/
+FILE_TRANSFER_FROM_VM.md
+.github/workflows/fly-deploy.yml

@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 
 # Install native build deps for @discordjs/opus and sodium-native
 RUN apt-get update && apt-get install -y \
