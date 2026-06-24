@@ -123,6 +123,34 @@ export class VoiceWorker {
       if (this.userStreams.has(userId)) return; // Already recording this user
       this.startUserStream(userId, receiver);
     });
+
+    // discord.js only emits a 'start' event when a user begins speaking AFTER
+    // we subscribe. Anyone already talking when the bot joins (very common for
+    // the person who issued /record from another channel while mid-sentence)
+    // never triggers a fresh 'start' and would be silently dropped from both
+    // the recording and the live transcript until they pause and resume.
+    //
+    // Proactively subscribe to every non-bot member already present in the
+    // channel so their audio is captured from the moment they next speak,
+    // independent of the speaking-start event.
+    this.subscribeExistingMembers(receiver, client);
+  }
+
+  private subscribeExistingMembers(receiver: any, client: any): void {
+    try {
+      const guild = client.guilds.cache.get(this.options.guildId);
+      const channel = guild?.channels?.cache?.get(this.options.channelId);
+      const members = channel?.members; // Collection<userId, GuildMember> for voice channels
+      if (!members) return;
+      for (const [userId, member] of members) {
+        if (member.user?.bot) continue; // skip bots (including ourselves)
+        if (this.userStreams.has(userId)) continue;
+        console.log(`[VoiceWorker] Pre-subscribing to member already in channel: ${userId}`);
+        this.startUserStream(userId, receiver);
+      }
+    } catch (err) {
+      console.error('[VoiceWorker] Failed to pre-subscribe existing members:', err);
+    }
   }
 
   private startUserStream(userId: string, receiver: any): void {
@@ -189,8 +217,21 @@ export class VoiceWorker {
 
     // Update last-activity timestamp on every opus packet so the silence
     // timeout resets continuously while anyone is speaking.
+    //
+    // We also record this user's first-start offset here (on the first real
+    // audio packet) rather than at subscribe time. For lazily-subscribed users
+    // these coincide, but for users we PRE-subscribe at join time (because they
+    // were already mid-speech) the first packet may not arrive until much
+    // later. The mixdown positions each user's file at userFirstStart.startedAt,
+    // and the file content begins at the first packet, so the offset must be
+    // anchored to the first packet to keep speakers time-aligned.
     opusStream.on('data', () => {
       this.lastVoiceActivityAt = Date.now();
+      if (!this.userFirstStart.has(userId)) {
+        const startedAt = Date.now();
+        this.userFirstStart.set(userId, { filePath, startedAt });
+        console.log(`[VoiceWorker] First audio from user ${userId} at offset ${startedAt - this.sessionStartedAt}ms`);
+      }
     });
 
     opusStream.pipe(decoder);
@@ -215,12 +256,11 @@ export class VoiceWorker {
     const now = Date.now();
     this.userStreams.set(userId, { filePath, writeStream, userId, startedAt: now });
 
-    // Track the first time this user ever started speaking in the session
-    // (subsequent reconnections after silence don't update this)
-    if (!this.userFirstStart.has(userId)) {
-      this.userFirstStart.set(userId, { filePath, startedAt: now });
-      console.log(`[VoiceWorker] Started recording user ${userId} at offset ${now - this.sessionStartedAt}ms`);
-    } else {
+    // NOTE: userFirstStart is recorded on the first actual audio packet (see the
+    // opusStream 'data' handler above), not here, so that pre-subscribed users
+    // who are not yet speaking get an accurate start offset. Reconnections after
+    // a silence timeout keep the original first-start (guarded by .has()).
+    if (this.userFirstStart.has(userId)) {
       console.log(`[VoiceWorker] Resumed recording user ${userId} (stream reconnected after silence)`);
     }
   }
