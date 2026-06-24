@@ -6,6 +6,7 @@ import { stopCommand } from './commands/stop';
 import { statusCommand } from './commands/status';
 import { grapevineCommand } from './commands/grapevine';
 import { scheduleCommand } from './commands/schedule';
+import { recordAccessCommand } from './commands/record-access';
 import { WorkerManager } from './services/worker-manager';
 import { testScheduleCommand } from './commands/test-schedule';
 import { startScheduler, stopScheduler } from './services/scheduler';
@@ -47,6 +48,7 @@ commands.set(statusCommand.data.name, statusCommand);
 commands.set(testScheduleCommand.data.name, testScheduleCommand);
 commands.set(grapevineCommand.data.name, grapevineCommand);
 commands.set(scheduleCommand.data.name, scheduleCommand);
+commands.set(recordAccessCommand.data.name, recordAccessCommand);
 
 setClient(client);
 

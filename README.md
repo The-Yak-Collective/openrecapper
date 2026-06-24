@@ -14,7 +14,8 @@ optionally emails it to your group.
 
 ## Features
 
-- **`/record`** — Join a voice channel and start recording (optional `name:`).
+- **`/record`** — Join a voice channel and start recording (optional `name:`). Usable by server managers or users granted access with `/record-access grant`.
+- **`/record-access`** — Admin command to grant/list/revoke non-admin users who may use `/record`.
 - **`/stop`** — Stop recording, transcribe, and post results.
 - **`/status`** — Show active recording sessions.
 - **Real-time transcription** — Live transcript streamed to a text channel as people talk.
@@ -176,7 +177,7 @@ src/
 ├── client.ts                         # Shared Discord client reference
 ├── config.ts                         # Environment config
 ├── register-commands.ts              # Slash command registration script
-├── commands/                         # /record /stop /status /test-schedule /grapevine
+├── commands/                         # /record /record-access /stop /status /test-schedule /grapevine
 ├── workers/
 │   └── voice-worker.ts               # Voice channel recorder (per-user streams)
 └── services/

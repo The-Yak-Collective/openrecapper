@@ -42,6 +42,9 @@ export const Config = {
   // Optional override for where standing-call schedules are persisted.
   // Defaults to ./data/schedules.json (managed via the /schedule command).
   SCHEDULES_FILE: process.env.SCHEDULES_FILE || '',
+  // Optional override for where per-guild /record grants are persisted.
+  // Defaults to ./data/record-permissions.json (managed via /record-access).
+  RECORD_PERMISSIONS_FILE: process.env.RECORD_PERMISSIONS_FILE || '',
 };
 
 export function validateConfig() {
