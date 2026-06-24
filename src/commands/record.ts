@@ -7,12 +7,12 @@ import {
 } from 'discord.js';
 import { WorkerManager } from '../services/worker-manager';
 import { adHocCallName } from '../services/call-naming';
+import { hasRecordPermission } from '../services/record-permission-store';
 
 export const recordCommand = {
   data: new SlashCommandBuilder()
     .setName('record')
     .setDescription('Start recording the voice channel you are in')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addChannelOption((option) =>
       option
         .setName('channel')
@@ -32,8 +32,14 @@ export const recordCommand = {
       await interaction.reply({ content: '❌ This command only works in servers.', ephemeral: true });
       return;
     }
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({ content: '❌ You need Manage Server permission to start recordings.', ephemeral: true });
+    const canRecord =
+      interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ||
+      hasRecordPermission(interaction.guild.id, interaction.user.id);
+    if (!canRecord) {
+      await interaction.reply({
+        content: '❌ You need Manage Server permission or explicit /record access from an admin.',
+        ephemeral: true,
+      });
       return;
     }
 

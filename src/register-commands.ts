@@ -6,6 +6,7 @@ import { statusCommand } from './commands/status';
 import { testScheduleCommand } from './commands/test-schedule';
 import { grapevineCommand } from './commands/grapevine';
 import { scheduleCommand } from './commands/schedule';
+import { recordAccessCommand } from './commands/record-access';
 
 validateConfig();
 
@@ -16,6 +17,7 @@ const commands = [
   testScheduleCommand.data.toJSON(),
   grapevineCommand.data.toJSON(),
   scheduleCommand.data.toJSON(),
+  recordAccessCommand.data.toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(Config.DISCORD_TOKEN);
