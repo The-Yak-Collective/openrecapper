@@ -6,12 +6,16 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 import { WorkerManager } from '../services/worker-manager';
+import { hasRecordPermission } from '../services/record-permission-store';
 
 export const stopCommand = {
   data: new SlashCommandBuilder()
     .setName('stop')
     .setDescription('Stop recording a voice channel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    // No setDefaultMemberPermissions: Discord gates command *visibility* on this
+    // static flag and cannot consult our per-user record grants. Mirror /record
+    // (visible to all, enforced at runtime) so granted users can stop the
+    // recordings they are allowed to start.
     .addChannelOption((option) =>
       option
         .setName('channel')
@@ -25,8 +29,14 @@ export const stopCommand = {
       await interaction.reply({ content: '❌ This command only works in servers.', ephemeral: true });
       return;
     }
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({ content: '❌ You need Manage Server permission to stop recordings.', ephemeral: true });
+    const canStop =
+      interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ||
+      hasRecordPermission(interaction.guild.id, interaction.user.id);
+    if (!canStop) {
+      await interaction.reply({
+        content: '❌ You need Manage Server permission or explicit /record access from an admin.',
+        ephemeral: true,
+      });
       return;
     }
 
