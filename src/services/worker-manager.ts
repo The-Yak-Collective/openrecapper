@@ -223,7 +223,15 @@ export class WorkerManager {
     const rosterHeader = this.buildRosterHeader(speakerNames);
 
     const transcriptionService = new TranscriptionService(Config.DEEPGRAM_API_KEY);
-    const transcript = await this.transcribeWithRetry(transcriptionService, combinedWavPath, sessionDir);
+    const transcript = await this.transcribeWithRetry(
+      transcriptionService,
+      files,
+      userMap,
+      userStartTimes,
+      sessionStartedAt,
+      speakerNames,
+      sessionDir,
+    );
 
     let transcriptText = '';
     let transcriptSrt = '';
@@ -401,22 +409,36 @@ export class WorkerManager {
 
   private async transcribeWithRetry(
     transcriptionService: TranscriptionService,
-    combinedWavPath: string,
+    files: string[],
+    userMap: Map<string, string>,
+    userStartTimes: Map<string, number>,
+    sessionStartedAt: number,
+    speakerNames: Map<string, string>,
     sessionDir: string
   ): Promise<
-    | { ok: true; value: Awaited<ReturnType<TranscriptionService['transcribeSession']>> }
+    | { ok: true; value: Awaited<ReturnType<TranscriptionService['transcribeUserTracks']>> }
     | { ok: false; error: string }
   > {
+    const tracks = files.map((filePath) => {
+      const userId = userMap.get(filePath) || path.basename(filePath, path.extname(filePath));
+      return {
+        filePath,
+        userId,
+        speakerName: speakerNames.get(userId) || `User ${userId.slice(-4)}`,
+        startedAt: userStartTimes.get(filePath) ?? sessionStartedAt,
+      };
+    });
+
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         if (attempt > 1) {
-          console.log('[WorkerManager] Retrying Deepgram transcription after backoff');
+          console.log('[WorkerManager] Retrying per-user Deepgram transcription after backoff');
           await WorkerManager.sleep(10_000);
         }
-        return { ok: true, value: await transcriptionService.transcribeSession(combinedWavPath) };
+        return { ok: true, value: await transcriptionService.transcribeUserTracks(tracks, sessionStartedAt) };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[WorkerManager] Deepgram transcription attempt ${attempt}/2 failed for ${sessionDir}:`, err);
+        console.error(`[WorkerManager] Per-user Deepgram transcription attempt ${attempt}/2 failed for ${sessionDir}:`, err);
         if (attempt === 2) return { ok: false, error: msg };
       }
     }

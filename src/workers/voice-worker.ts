@@ -132,7 +132,10 @@ export class VoiceWorker {
     //
     // Proactively subscribe to every non-bot member already present in the
     // channel so their audio is captured from the moment they next speak,
-    // independent of the speaking-start event.
+    // independent of the speaking-start event. The live transcription stream
+    // for each user is opened lazily on their first decoded PCM chunk (see
+    // startUserStream), so silent listeners do not each hold open a Deepgram
+    // websocket before they actually speak.
     this.subscribeExistingMembers(receiver, client);
   }
 
@@ -186,26 +189,31 @@ export class VoiceWorker {
     const live = this.options.liveTranscription;
     if (live) {
       let sendPcm: ((chunk: Buffer) => void) | null = null;
+      let streamRequested = false;
       const earlyBuffer: Buffer[] = [];
 
-      // Tee raw decoder output to live transcription (no silence filling)
+      // Tee raw decoder output to live transcription (no silence filling).
+      // The Deepgram stream is opened LAZILY on the first decoded PCM chunk —
+      // not at subscribe time — so pre-subscribed but silent listeners do not
+      // each consume a websocket/keepalive until they actually speak.
       decoder.on('data', (chunk: Buffer) => {
         if (sendPcm) {
           sendPcm(chunk);
-        } else {
-          earlyBuffer.push(chunk);
+          return;
         }
-      });
-
-      // Open Deepgram stream async, flush buffered audio when ready
-      live.openStreamForUser(userId).then((send) => {
-        sendPcm = send;
-        for (const buf of earlyBuffer) {
-          sendPcm(buf);
-        }
-        earlyBuffer.length = 0;
-      }).catch((err) => {
-        console.error(`[VoiceWorker] Failed to open live stream for ${userId}:`, err);
+        earlyBuffer.push(chunk);
+        if (streamRequested) return;
+        streamRequested = true;
+        // Open Deepgram stream async, flush buffered audio when ready.
+        live.openStreamForUser(userId).then((send) => {
+          sendPcm = send;
+          for (const buf of earlyBuffer) {
+            sendPcm(buf);
+          }
+          earlyBuffer.length = 0;
+        }).catch((err) => {
+          console.error(`[VoiceWorker] Failed to open live stream for ${userId}:`, err);
+        });
       });
 
       // Silence-filled stream goes to the file for correct mixdown
