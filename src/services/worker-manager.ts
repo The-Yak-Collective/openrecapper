@@ -495,21 +495,29 @@ export class WorkerManager {
       warnings.unshift(`⚠️ Deepgram transcription failed after retry; audio is preserved at \`${artifacts.sessionDir}\`.`);
     }
 
-    const attachments: NonNullable<MessageCreateOptions['files']>[number][] = [];
+    // Small text artifacts ride with the main message; the (potentially large)
+    // audio is sent separately so a size failure on the audio never suppresses
+    // the summary + R2 links.
+    const textAttachments: NonNullable<MessageCreateOptions['files']>[number][] = [];
     if (!artifacts.transcriptionFailed) {
-      attachments.push(
+      textAttachments.push(
         { attachment: Buffer.from(artifacts.transcriptText), name: 'transcript.txt' },
         { attachment: Buffer.from(artifacts.transcriptSrt), name: 'transcript.srt' },
       );
-      if (artifacts.summaryText) attachments.unshift({ attachment: Buffer.from(artifacts.summaryText), name: 'summary.md' });
+      if (artifacts.summaryText) textAttachments.unshift({ attachment: Buffer.from(artifacts.summaryText), name: 'summary.md' });
     }
 
+    // Discord's per-request upload limit for non-boosted guilds is ~10MB, so
+    // only attach the wav when it comfortably fits; otherwise rely on the R2
+    // link. (The old 25MB guard let 21MB files through and 413'd the whole post.)
+    const WAV_ATTACH_LIMIT = 8 * 1024 * 1024;
+    let wavAttachment: NonNullable<MessageCreateOptions['files']>[number] | null = null;
     if (fs.existsSync(artifacts.combinedWavPath)) {
       const wavSize = fs.statSync(artifacts.combinedWavPath).size;
-      if (wavSize < 25 * 1024 * 1024) {
-        attachments.push({ attachment: artifacts.combinedWavPath, name: 'recording.wav' });
+      if (wavSize < WAV_ATTACH_LIMIT) {
+        wavAttachment = { attachment: artifacts.combinedWavPath, name: 'recording.wav' };
       } else {
-        console.log(`[WorkerManager] Audio file too large for Discord (${(wavSize / 1024 / 1024).toFixed(1)}MB), skipping attachment`);
+        console.log(`[WorkerManager] Audio file too large for Discord (${(wavSize / 1024 / 1024).toFixed(1)}MB), skipping attachment (available via R2 link)`);
       }
     }
 
@@ -534,26 +542,49 @@ export class WorkerManager {
       `**Speakers:** ${artifacts.speakerCount}\n` +
       `**Requested by:** <@${session.requesterId}>${r2Note}${warningNote}`;
 
-    if (textChannel?.isTextBased?.()) {
+    const target = textChannel?.isTextBased?.()
+      ? textChannel
+      : (console.warn('[WorkerManager] Text channel not available, falling back to DM'),
+         await client.users.fetch(session.requesterId).catch((err: unknown) => {
+           console.error('[WorkerManager] Failed to fetch requester for DM:', err);
+           return null;
+         }));
+    if (!target) return;
+
+    // 1) Main message: summary text + R2 links + small text artifacts. Retry
+    //    without attachments if the attachments push it over the size limit, so
+    //    the summary and links always get through.
+    try {
+      await target.send({ content, files: textAttachments });
+    } catch (err) {
+      console.error('[WorkerManager] Failed to post delivery message with attachments, retrying without:', err);
       try {
-        await textChannel.send({ content, files: attachments });
-        if (artifacts.summaryText) {
-          const chunks = WorkerManager.chunkText(artifacts.summaryText);
-          for (let i = 0; i < chunks.length; i++) {
-            const suffix = chunks.length > 1 ? `\n\n*(${i + 1}/${chunks.length})*` : '';
-            await textChannel.send({ content: chunks[i] + suffix });
-          }
-        }
-      } catch (err) {
-        console.error('[WorkerManager] Failed to post to text channel:', err);
+        await target.send({ content });
+      } catch (err2) {
+        console.error('[WorkerManager] Failed to post delivery message even without attachments:', err2);
       }
-    } else {
-      console.warn('[WorkerManager] Text channel not available, falling back to DM');
+    }
+
+    // 2) Audio as a separate follow-up so a size failure here can't suppress
+    //    the summary above.
+    if (wavAttachment) {
       try {
-        const user = await client.users.fetch(session.requesterId);
-        await user.send({ content, files: attachments });
+        await target.send({ content: '🔊 Audio recording:', files: [wavAttachment] });
       } catch (err) {
-        console.error('[WorkerManager] Failed to DM requester:', err);
+        console.error('[WorkerManager] Failed to post audio attachment (available via R2 link):', err);
+      }
+    }
+
+    // 3) Summary body as chunked follow-up messages.
+    if (artifacts.summaryText) {
+      const chunks = WorkerManager.chunkText(artifacts.summaryText);
+      for (let i = 0; i < chunks.length; i++) {
+        const suffix = chunks.length > 1 ? `\n\n*(${i + 1}/${chunks.length})*` : '';
+        try {
+          await target.send({ content: chunks[i] + suffix });
+        } catch (err) {
+          console.error(`[WorkerManager] Failed to post summary chunk ${i + 1}/${chunks.length}:`, err);
+        }
       }
     }
   }
