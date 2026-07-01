@@ -186,12 +186,30 @@ export class WorkerManager {
     const { getClient } = require('../client');
     const client = getClient();
 
-    // Resolve the text channel to post results
+    // Resolve the text channel to post results. If the guild has configured a
+    // dedicated summary channel via /set-summary-channel, prefer that; otherwise
+    // fall back to the channel where /record was invoked (default behaviour).
+    const { getSummaryChannelForGuild } = require('./summary-channel-store');
+    let targetChannelId = session.textChannelId;
+    try {
+      const overrideId = getSummaryChannelForGuild(session.guildId);
+      if (overrideId) targetChannelId = overrideId;
+    } catch (err) {
+      console.error('[WorkerManager] Could not read summary channel override:', err);
+    }
+
     let textChannel: any;
     try {
-      textChannel = await client.channels.fetch(session.textChannelId);
+      textChannel = await client.channels.fetch(targetChannelId);
     } catch (err) {
-      console.error('[WorkerManager] Could not fetch text channel:', err);
+      console.error('[WorkerManager] Could not fetch summary channel, falling back to record channel:', err);
+      if (targetChannelId !== session.textChannelId) {
+        try {
+          textChannel = await client.channels.fetch(session.textChannelId);
+        } catch (err2) {
+          console.error('[WorkerManager] Could not fetch fallback text channel:', err2);
+        }
+      }
     }
 
     if (files.length === 0) {
