@@ -7,6 +7,7 @@ import {
 } from 'discord.js';
 import { WorkerManager } from '../services/worker-manager';
 import { hasRecordPermission } from '../services/record-permission-store';
+import { getSummaryChannelForGuild } from '../services/summary-channel-store';
 
 export const stopCommand = {
   data: new SlashCommandBuilder()
@@ -91,8 +92,10 @@ export const stopCommand = {
 
     try {
       const result = await manager.stopRecording(targetChannelId);
+      const summaryChannelId = getSummaryChannelForGuild(interaction.guild.id);
+      const destination = summaryChannelId ? `in <#${summaryChannelId}>` : 'here';
       await interaction.editReply(
-        `⏹️ Recording stopped in <#${targetChannelId}>. Transcribing ${result.fileCount} audio stream(s)... Results will be posted here.`
+        `⏹️ Recording stopped in <#${targetChannelId}>. Transcribing ${result.fileCount} audio stream(s)... Results will be posted ${destination}.`
       );
     } catch (error) {
       console.error('[Command:/stop] Failed to stop recording:', error);
