@@ -45,6 +45,7 @@ export const Config = {
   // Optional override for where per-guild /record grants are persisted.
   // Defaults to ./data/record-permissions.json (managed via /record-access).
   RECORD_PERMISSIONS_FILE: process.env.RECORD_PERMISSIONS_FILE || '',
+  SUMMARY_CHANNELS_FILE: process.env.SUMMARY_CHANNELS_FILE || '',
 };
 
 export function validateConfig() {
