@@ -56,6 +56,9 @@ export const Config = {
   // unset, no issue emails are sent (no fallback to SUMMARY_EMAIL_TO). Requires
   // the relay to be configured for delivery.
   ISSUE_EMAIL_TO: process.env.ISSUE_EMAIL_TO || '',
+  // Discord user IDs (comma-separated) to cc/@-mention at the end of the public
+  // reply when an issue is filed. Empty = no cc line.
+  ISSUE_CC_USER_IDS: process.env.ISSUE_CC_USER_IDS || '',
 };
 
 export function validateConfig() {

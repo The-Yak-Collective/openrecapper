@@ -80,60 +80,80 @@ export const openrecapperIssueCommand = {
     const text = interaction.options.getString('text', true);
 
     // The issue and the confirmation are posted publicly in this channel.
-    // Defer ephemerally so that if anything fails the error stays private. On
-    // success we post the issue publicly via a follow-up message.
+    // Defer ephemerally so that if issue creation fails, the error stays private.
+    // On success we post the result publicly in the channel (see below).
     await interaction.deferReply({ ephemeral: true });
 
+    // --- Create the issue. A failure here is the only thing reported as an
+    //     ephemeral error; once the issue exists we never report failure. ---
+    let draft;
+    let url: string;
+    let number: number;
     try {
-      const draft = await IssueDraftService.draft(text);
-
-      const footer =
-        `\n\n---\n_Filed from Discord by <@${interaction.user.id}> in <#${interaction.channelId}>._`;
-
-      const { url, number } = await GithubIssueClient.createIssue({
+      draft = await IssueDraftService.draft(text);
+      // No attribution footer in the issue body: the reporter is already
+      // visible in the public channel reply below.
+      ({ url, number } = await GithubIssueClient.createIssue({
         title: draft.title,
-        body: draft.body + footer,
+        body: draft.body,
         labels: [TYPE_LABELS[draft.type]],
-      });
-
-      // Best-effort email notification; never fails the command.
-      const emailWarning = await this.notifyByEmail(interaction, draft.title, draft.body, url, number);
-
-      const notes: string[] = [];
-      if (draft.fallback) {
-        notes.push('ℹ️ AI drafting was unavailable, so this used your text as-is — feel free to tidy it on GitHub.');
-      }
-      if (emailWarning) notes.push(emailWarning);
-
-      // Embed descriptions cap at 4096 chars.
-      const MAX_DESC = 4000;
-      let description = draft.body;
-      if (description.length > MAX_DESC) {
-        description = description.slice(0, MAX_DESC) + `\n\n…(full text on GitHub)`;
-      }
-
-      const embed = new EmbedBuilder()
-        .setColor(TYPE_COLORS[draft.type])
-        .setTitle(`#${number} · ${draft.title}`.slice(0, 256))
-        .setURL(url)
-        .setDescription(description)
-        .setFooter({
-          text: `${draft.type} · filed by ${interaction.user.username}`,
-        });
-
-      const content =
-        `📝 <@${interaction.user.id}> filed issue **#${number}** — ${url}\n` +
-        `✏️ Not quite right? Edit it on GitHub via the link above.` +
-        (notes.length ? `\n\n${notes.join('\n')}` : '');
-
-      // Public post in the channel (the deferred reply is ephemeral).
-      await interaction.followUp({ content, embeds: [embed] });
-      // Close out the ephemeral "thinking" state privately.
-      await interaction.editReply(`✅ Filed issue #${number} — posted in this channel.`);
+      }));
     } catch (error) {
       console.error('[Command:/openrecapper-issue] Failed to create issue:', error);
-      // Ephemeral: the deferred reply was ephemeral, so this stays private.
       await interaction.editReply('❌ Failed to file the issue. Check the bot logs for details.');
+      return;
+    }
+
+    // --- Issue exists from here on. Compose the public message. ---
+    const emailWarning = await this.notifyByEmail(interaction, draft.title, draft.body, url, number);
+
+    const notes: string[] = [];
+    if (draft.fallback) {
+      notes.push('ℹ️ AI drafting was unavailable, so this used your text as-is — feel free to tidy it on GitHub.');
+    }
+    if (emailWarning) notes.push(emailWarning);
+
+    // Embed descriptions cap at 4096 chars.
+    const MAX_DESC = 4000;
+    let description = draft.body;
+    if (description.length > MAX_DESC) {
+      description = description.slice(0, MAX_DESC) + `\n\n…(full text on GitHub)`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(TYPE_COLORS[draft.type])
+      .setTitle(`#${number} · ${draft.title}`.slice(0, 256))
+      .setURL(url)
+      .setDescription(description)
+      .setFooter({ text: `${draft.type} · filed by ${interaction.user.username}` });
+
+    const ccIds = parseRecipients(Config.ISSUE_CC_USER_IDS);
+    const ccLine = ccIds.length ? `\n\ncc: ${ccIds.map((id) => `<@${id}>`).join(' ')}` : '';
+
+    const content =
+      `📝 <@${interaction.user.id}> filed issue **#${number}** — ${url}\n` +
+      `✏️ Not quite right? Edit it on GitHub via the link above.` +
+      (notes.length ? `\n\n${notes.join('\n')}` : '') +
+      ccLine;
+
+    // Post publicly in the channel. channel.send is used (rather than followUp)
+    // because a follow-up inherits the ephemeral flag of the deferred reply and
+    // would not be visible to others. If we can't post publicly, fall back to
+    // the ephemeral reply so the reporter still gets the link.
+    const channel = interaction.channel;
+    try {
+      if (channel && channel.isTextBased() && 'send' in channel) {
+        await channel.send({ content, embeds: [embed] });
+        await interaction.editReply(`✅ Filed issue #${number} — posted in this channel: ${url}`);
+      } else {
+        await interaction.editReply({ content, embeds: [embed] });
+      }
+    } catch (error) {
+      console.error('[Command:/openrecapper-issue] Issue created but failed to post public reply:', error);
+      await interaction.editReply({
+        content: `✅ Filed issue #${number} — ${url}\n(couldn't post publicly in this channel)`,
+        embeds: [embed],
+      });
     }
   },
 
