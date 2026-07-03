@@ -8,6 +8,7 @@ import { grapevineCommand } from './commands/grapevine';
 import { scheduleCommand } from './commands/schedule';
 import { recordAccessCommand } from './commands/record-access';
 import { setSummaryChannelCommand } from './commands/set-summary-channel';
+import { openrecapperIssueCommand } from './commands/openrecapper-issue';
 import { WorkerManager } from './services/worker-manager';
 import { testScheduleCommand } from './commands/test-schedule';
 import { startScheduler, stopScheduler } from './services/scheduler';
@@ -51,6 +52,7 @@ commands.set(grapevineCommand.data.name, grapevineCommand);
 commands.set(scheduleCommand.data.name, scheduleCommand);
 commands.set(recordAccessCommand.data.name, recordAccessCommand);
 commands.set(setSummaryChannelCommand.data.name, setSummaryChannelCommand);
+commands.set(openrecapperIssueCommand.data.name, openrecapperIssueCommand);
 
 setClient(client);
 

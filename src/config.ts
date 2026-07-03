@@ -46,6 +46,19 @@ export const Config = {
   // Defaults to ./data/record-permissions.json (managed via /record-access).
   RECORD_PERMISSIONS_FILE: process.env.RECORD_PERMISSIONS_FILE || '',
   SUMMARY_CHANNELS_FILE: process.env.SUMMARY_CHANNELS_FILE || '',
+  // GitHub issue filing via the /openrecapper-issue command (optional). The
+  // command self-disables when token/owner/repo are unset. Use a fine-grained
+  // PAT scoped to "Issues: Read & Write" on the single target repo.
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+  GITHUB_OWNER: process.env.GITHUB_OWNER || '',
+  GITHUB_REPO: process.env.GITHUB_REPO || '',
+  // Comma-separated recipients emailed when an issue is filed. Standalone — if
+  // unset, no issue emails are sent (no fallback to SUMMARY_EMAIL_TO). Requires
+  // the relay to be configured for delivery.
+  ISSUE_EMAIL_TO: process.env.ISSUE_EMAIL_TO || '',
+  // Discord user IDs (comma-separated) to cc/@-mention at the end of the public
+  // reply when an issue is filed. Empty = no cc line.
+  ISSUE_CC_USER_IDS: process.env.ISSUE_CC_USER_IDS || '',
 };
 
 export function validateConfig() {
