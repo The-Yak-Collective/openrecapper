@@ -8,6 +8,7 @@ import { grapevineCommand } from './commands/grapevine';
 import { scheduleCommand } from './commands/schedule';
 import { recordAccessCommand } from './commands/record-access';
 import { setSummaryChannelCommand } from './commands/set-summary-channel';
+import { openrecapperIssueCommand } from './commands/openrecapper-issue';
 
 validateConfig();
 
@@ -20,6 +21,7 @@ const commands = [
   scheduleCommand.data.toJSON(),
   recordAccessCommand.data.toJSON(),
   setSummaryChannelCommand.data.toJSON(),
+  openrecapperIssueCommand.data.toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(Config.DISCORD_TOKEN);
