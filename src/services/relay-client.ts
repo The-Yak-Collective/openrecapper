@@ -7,7 +7,7 @@ import { Config } from '../config';
  * bot still records and transcribes; summaries + email are simply skipped.
  *
  * Expected relay API (you provide the implementation):
- *   POST /summarize { system, prompt, model?, maxTokens } -> { text }
+ *   POST /summarize { system, prompt, model?, maxTokens } -> { text, truncated? }
  *   POST /email     { to, subject, body }                 -> 200 OK
  * Both authenticated with the `X-Relay-Token` header.
  */
@@ -48,15 +48,26 @@ export class RelayClient {
     throw lastError;
   }
 
-  /** Generate a summary via the LLM Gateway. Returns the Markdown text. */
-  static async summarize(system: string, prompt: string, maxTokens = 2500): Promise<string> {
+  /**
+   * Generate a summary via the LLM Gateway. Returns the Markdown text plus
+   * whether the model hit the hard `maxTokens` cap (output cut off).
+   * `maxTokens` is the hard API cap; callers that state a soft length target
+   * in the prompt should pass headroom above that target so the cap never
+   * truncates output mid-sentence. Relays that don't report `truncated` are
+   * treated as not truncated.
+   */
+  static async summarize(
+    system: string,
+    prompt: string,
+    maxTokens = 2500
+  ): Promise<{ text: string; truncated: boolean }> {
     const data = await this.post('/summarize', {
       system,
       prompt,
       model: Config.SUMMARY_MODEL || undefined,
       maxTokens,
     }, 120_000);
-    return (data.text || '').trim();
+    return { text: (data.text || '').trim(), truncated: data.truncated === true };
   }
 
   /** Send a plain-text email via the relay's email gateway. */

@@ -1,0 +1,30 @@
+# Example systemd unit for the relay, based on the unit running on this host
+# (`systemctl cat relay.service`). The real RELAY_TOKEN value has been
+# replaced with a placeholder below — do not commit a real token.
+#
+# The ExecStart node path is host-specific: this host uses
+# /home/exedev/.local/bin/node (v24.17.0, installed for the `exedev` user).
+# Adjust WorkingDirectory/ExecStart/User for your own host.
+
+# /etc/systemd/system/relay.service
+[Unit]
+Description=OpenRecapper Relay (LLM gateway bridge)
+After=network.target
+
+[Service]
+Type=simple
+User=exedev
+WorkingDirectory=/home/exedev/relay
+Environment=RELAY_TOKEN=<generate-with: openssl rand -hex 24>
+# Gateway URLs: look up the current addresses in the exe.dev docs
+# (https://exe.dev/docs.md).
+Environment=RELAY_LLM_GATEWAY=<exe.dev LLM gateway URL>
+Environment=RELAY_EMAIL_GATEWAY=<exe.dev email gateway URL>
+Environment=RELAY_PORT=8787
+Environment=RELAY_MODEL=claude-sonnet-4-6
+ExecStart=/home/exedev/.local/bin/node /home/exedev/relay/server.mjs
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

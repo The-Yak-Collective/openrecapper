@@ -57,6 +57,7 @@ interface DeliveryArtifacts {
   transcriptText: string;
   transcriptSrt: string;
   summaryText: string | null;
+  summaryTruncated: boolean;
   speakerNames: Map<string, string>;
   speakerCount: number;
   transcriptionFailed: boolean;
@@ -261,6 +262,7 @@ export class WorkerManager {
     let metadataPath: string | undefined;
     let summaryPath: string | undefined;
     let summaryText: string | null = null;
+    let summaryTruncated = false;
     let relayWarning = '';
     let emailWarning = '';
 
@@ -291,8 +293,9 @@ export class WorkerManager {
         const generated = await SummaryService.summarize(rosterHeader + transcriptText, participants);
         if (generated) {
           const summaryDoc = `# ${session.callName} — Session Notes\n\n` +
-            `${rosterHeader}${generated}\n`;
+            `${rosterHeader}${generated.text}\n`;
           summaryText = summaryDoc;
+          summaryTruncated = generated.truncated;
           fs.writeFileSync(summaryPath, summaryDoc);
           console.log(`[WorkerManager] Summary saved to ${summaryPath}`);
         }
@@ -361,6 +364,7 @@ export class WorkerManager {
           transcriptText,
           transcriptSrt,
           summaryText,
+          summaryTruncated,
           speakerNames,
           speakerCount,
           transcriptionFailed,
@@ -387,6 +391,7 @@ export class WorkerManager {
       transcriptText,
       transcriptSrt,
       summaryText,
+      summaryTruncated,
       speakerNames,
       speakerCount,
       transcriptionFailed,
@@ -606,6 +611,20 @@ export class WorkerManager {
           await target.send({ content: chunks[i] + suffix });
         } catch (err) {
           console.error(`[WorkerManager] Failed to post summary chunk ${i + 1}/${chunks.length}:`, err);
+        }
+      }
+
+      // 4) If the model hit the hard token cap, the summary above is cut off —
+      //    tell readers where the full transcript is so they can summarize it
+      //    with their own LLM.
+      if (artifacts.summaryTruncated) {
+        try {
+          await target.send({
+            content: '⚠️ The AI summary above hit its length limit and is cut off at the end. ' +
+              'For complete notes, download `transcript.txt` (attached above) and generate a summary with your own LLM.',
+          });
+        } catch (err) {
+          console.error('[WorkerManager] Failed to post summary-truncated notice:', err);
         }
       }
     }

@@ -58,7 +58,7 @@ export class IssueDraftService {
 
     if (this.isConfigured() && cleaned.length > 0) {
       try {
-        const raw = await RelayClient.summarize(this.systemPrompt(), this.userPrompt(cleaned));
+        const { text: raw } = await RelayClient.summarize(this.systemPrompt(), this.userPrompt(cleaned));
         const parsed = this.parse(raw);
         if (parsed) return parsed;
         console.warn('[IssueDraft] LLM output could not be parsed; using mechanical fallback');
