@@ -13,6 +13,12 @@ const tokens = (process.env.DISCORD_TOKENS || process.env.DISCORD_TOKEN || '')
   .map((t) => t.trim())
   .filter(Boolean);
 
+const recordMeetingNames = (process.env.RECORD_MEETING_NAMES || 'UNNAMED-MEETING')
+  .split(',')
+  .map((t) => t.trim())
+  .filter(Boolean);
+if (recordMeetingNames.length === 0) recordMeetingNames.push('UNNAMED-MEETING');
+
 export const Config = {
   DISCORD_TOKENS: tokens,
   // Primary token — kept so existing single-token call sites
@@ -22,6 +28,8 @@ export const Config = {
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY!,
   // Display name used in health-check alerts and email subjects.
   BOT_NAME: process.env.BOT_NAME || 'OpenRecapper',
+  // Meeting names offered by /record's name option. Date is appended automatically.
+  RECORD_MEETING_NAMES: recordMeetingNames,
   RECORDINGS_DIR: process.env.RECORDINGS_DIR || path.join(__dirname, '..', 'recordings'),
   R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID || '',
   R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID || '',

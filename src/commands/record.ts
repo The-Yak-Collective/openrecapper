@@ -8,6 +8,7 @@ import { WorkerManager, AlreadyRecordingError } from '../services/worker-manager
 import { RecorderPool, NoRecorderAvailableError } from '../services/recorder-pool';
 import { adHocCallName } from '../services/call-naming';
 import { hasRecordPermission } from '../services/record-permission-store';
+import { Config } from '../config';
 
 export const recordCommand = {
   data: new SlashCommandBuilder()
@@ -20,12 +21,16 @@ export const recordCommand = {
         .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
         .setRequired(true)
     )
-    .addStringOption((option) =>
+    .addStringOption((option) => {
       option
         .setName('name')
-        .setDescription('Name for this ad hoc call (date is appended automatically)')
-        .setRequired(false)
-    ),
+        .setDescription('Meeting name (date is appended automatically)')
+        .setRequired(true);
+      for (const name of Config.RECORD_MEETING_NAMES.slice(0, 25)) {
+        option.addChoices({ name, value: name });
+      }
+      return option;
+    }),
 
   async execute(interaction: ChatInputCommandInteraction) {
     if (!interaction.guild) {
@@ -64,8 +69,8 @@ export const recordCommand = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const nameOpt = interaction.options.getString('name');
-      const callName = adHocCallName(nameOpt || 'Ad hoc');
+      const nameOpt = interaction.options.getString('name', true);
+      const callName = adHocCallName(nameOpt);
 
       await manager.startRecording({
         guildId: interaction.guild.id,

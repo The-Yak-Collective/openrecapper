@@ -14,7 +14,7 @@ optionally emails it to your group.
 
 ## Features
 
-- **`/record`** — Start recording a voice channel (required `channel:`, optional `name:`). Usable by server managers or users granted access with `/record-access grant`.
+- **`/record`** — Start recording a voice channel (required `channel:` and `name:` picker). Usable by server managers or users granted access with `/record-access grant`.
 - **`/record-access`** — Admin command to grant/list/revoke non-admin users who may use `/record`.
 - **`/stop`** — Stop recording a voice channel (required `channel:`), transcribe, and post results.
 - **Concurrent recordings** *(optional)* — Record several meetings in the same server at once by supplying extra bot tokens via `DISCORD_TOKENS`.
@@ -84,6 +84,11 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
    it to your server(s) with Connect + Speak permissions (a recorder not
    invited to a server simply doesn't count toward that server's capacity).
    Single-token setups can keep using `DISCORD_TOKEN` unchanged.
+
+   **Meeting names for `/record`**: set `RECORD_MEETING_NAMES` to a
+   comma-separated list of names shown in the required `name:` picker. The
+   recording date is appended automatically, e.g.
+   `RECORD_MEETING_NAMES=SIG-FPT,SIG-P4B,SIG-MRG,SIG-DRG`.
 
 3. **Register slash commands** (against your own app)
    ```bash
