@@ -1,24 +1,24 @@
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
-  GuildMember,
   ChannelType,
   PermissionFlagsBits,
 } from 'discord.js';
-import { WorkerManager } from '../services/worker-manager';
+import { WorkerManager, AlreadyRecordingError } from '../services/worker-manager';
+import { RecorderPool, NoRecorderAvailableError } from '../services/recorder-pool';
 import { adHocCallName } from '../services/call-naming';
 import { hasRecordPermission } from '../services/record-permission-store';
 
 export const recordCommand = {
   data: new SlashCommandBuilder()
     .setName('record')
-    .setDescription('Start recording the voice channel you are in')
+    .setDescription('Start recording a voice channel')
     .addChannelOption((option) =>
       option
         .setName('channel')
-        .setDescription('Voice channel to record (defaults to your current channel)')
+        .setDescription('Voice channel to record')
         .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
-        .setRequired(false)
+        .setRequired(true)
     )
     .addStringOption((option) =>
       option
@@ -43,11 +43,10 @@ export const recordCommand = {
       return;
     }
 
-    const member = interaction.member as GuildMember;
-    const targetChannel = interaction.options.getChannel('channel') ?? member.voice.channel;
+    const targetChannel = interaction.options.getChannel('channel');
 
     if (!targetChannel || (targetChannel.type !== ChannelType.GuildVoice && targetChannel.type !== ChannelType.GuildStageVoice)) {
-      await interaction.reply({ content: '❌ Join a voice channel first, or specify one.', ephemeral: true });
+      await interaction.reply({ content: '❌ Pick a voice or stage channel to record.', ephemeral: true });
       return;
     }
     if (!('guildId' in targetChannel) || targetChannel.guildId !== interaction.guild.id) {
@@ -78,6 +77,18 @@ export const recordCommand = {
 
       await interaction.editReply(`🔴 Recording started for **${callName}** in <#${targetChannel.id}>. Use \`/stop\` to end.`);
     } catch (error) {
+      if (error instanceof AlreadyRecordingError) {
+        await interaction.editReply(`⚠️ Already recording <#${targetChannel.id}>.`);
+        return;
+      }
+      if (error instanceof NoRecorderAvailableError) {
+        const pool = RecorderPool.getInstance();
+        const cap = pool.capacityForGuild(interaction.guild.id);
+        await interaction.editReply(
+          `⚠️ All ${cap} recorder bot(s) in this server are busy. Try again when a meeting ends.`
+        );
+        return;
+      }
       console.error('[Command:/record] Failed to start recording:', error);
       await interaction.editReply('❌ Failed to start recording. Check the bot logs for details.');
     }

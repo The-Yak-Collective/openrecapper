@@ -4,6 +4,7 @@ import { StorageService } from './storage-service';
 import { SummaryService } from './summary-service';
 import { RelayClient } from './relay-client';
 import { LiveTranscriptionService } from './live-transcription-service';
+import { RecorderPool, RecorderLease, NoRecorderAvailableError } from './recorder-pool';
 import { Config } from '../config';
 import { TextChannel, MessageCreateOptions } from 'discord.js';
 import path from 'path';
@@ -21,6 +22,7 @@ export interface RecordingSession {
   silenceCheckTimer: ReturnType<typeof setInterval> | null;
   sessionDir: string;
   activeMarkerPath: string;
+  lease: RecorderLease;
 }
 
 export interface StartRecordingOptions {
@@ -45,6 +47,7 @@ export interface SessionInfo {
   channelId: string;
   startedAt: number;
   speakerCount: number;
+  recorderLabel: string;
 }
 
 interface DeliveryArtifacts {
@@ -68,9 +71,64 @@ interface DeliveryArtifacts {
   emailWarning: string;
 }
 
+/**
+ * Thrown when a start is requested for a channel that already has a live
+ * recording (or one mid-startup). Callers turn this into a friendly message.
+ */
+export class AlreadyRecordingError extends Error {
+  constructor(public readonly channelId: string) {
+    super(`Already recording channel ${channelId}`);
+    this.name = 'AlreadyRecordingError';
+  }
+}
+
 export class WorkerManager {
   private static instance: WorkerManager;
   private sessions: Map<string, RecordingSession> = new Map();
+  // Channels reserved for a recording that is mid-startup (between the
+  // synchronous reservation and the moment its session lands in `sessions`).
+  // This closes the window in which two near-simultaneous starts for the same
+  // channel could both pass the check and put two different recorder bots into
+  // one voice channel.
+  private pendingChannels: Set<string> = new Set();
+
+  // With N concurrent recordings, N sessions can end at once; mixdown is
+  // CPU-heavy and Deepgram/relay calls are rate-limited, so post-processing
+  // runs through this gate instead of all at once.
+  private static readonly MAX_CONCURRENT_POSTPROCESS = 2;
+  private activePostProcess = 0;
+  private postProcessWaiters: Array<() => void> = [];
+
+  /**
+   * Synchronously reserve a channel for an incoming recording. Returns false
+   * if the channel is already recording or mid-startup. Atomic by virtue of
+   * running to completion with no `await` in between — this is the
+   * authoritative one-bot-per-channel guard (the command-layer isRecording()
+   * check is only a friendly fast-path).
+   */
+  private reserveChannel(channelId: string): boolean {
+    if (this.sessions.has(channelId) || this.pendingChannels.has(channelId)) return false;
+    this.pendingChannels.add(channelId);
+    return true;
+  }
+
+  /** Drop a mid-startup reservation (on failure, or once the session is set). */
+  private releasePendingChannel(channelId: string): void {
+    this.pendingChannels.delete(channelId);
+  }
+
+  private async withPostProcessSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.activePostProcess >= WorkerManager.MAX_CONCURRENT_POSTPROCESS) {
+      await new Promise<void>((resolve) => this.postProcessWaiters.push(resolve));
+    }
+    this.activePostProcess++;
+    try {
+      return await fn();
+    } finally {
+      this.activePostProcess--;
+      this.postProcessWaiters.shift()?.();
+    }
+  }
 
   static getInstance(): WorkerManager {
     if (!WorkerManager.instance) {
@@ -80,63 +138,91 @@ export class WorkerManager {
   }
 
   async startRecording(options: StartRecordingOptions): Promise<void> {
-    const sessionDir = path.join(
-      Config.RECORDINGS_DIR,
-      `${options.guildId}_${options.channelId}_${Date.now()}`
-    );
-    fs.mkdirSync(sessionDir, { recursive: true });
+    // Reserve the target CHANNEL synchronously — before any await can run — so
+    // two near-simultaneous starts for the same channel cannot both proceed
+    // and put two different recorder bots into one voice channel.
+    if (!this.reserveChannel(options.channelId)) {
+      throw new AlreadyRecordingError(options.channelId);
+    }
 
-    // Set up live transcription in the explicit invocation/schedule text channel.
-    let liveTranscription: LiveTranscriptionService | null = null;
+    // Reserve a recorder identity synchronously too, so two concurrent /record
+    // calls cannot double-book a client.
+    const pool = RecorderPool.getInstance();
+    const lease = pool.allocate(options.guildId);
+    if (!lease) {
+      this.releasePendingChannel(options.channelId);
+      throw new NoRecorderAvailableError(options.guildId, pool.capacityForGuild(options.guildId));
+    }
+
+    // Every failure path below must release the lease; the pending-channel
+    // reservation is cleared in `finally` (on success the session in `sessions`
+    // takes over as the authoritative reservation).
     try {
-      const { getClient } = require('../client');
-      const client = getClient();
-      const guild = client.guilds.cache.get(options.guildId);
-      if (guild) {
-        const targetChannel = await client.channels.fetch(options.textChannelId) as TextChannel;
-        if (targetChannel?.isTextBased?.()) {
-          liveTranscription = new LiveTranscriptionService(targetChannel as TextChannel);
-          console.log(`[WorkerManager] Live transcription will post to #${targetChannel.name}`);
+      const sessionDir = path.join(
+        Config.RECORDINGS_DIR,
+        `${options.guildId}_${options.channelId}_${Date.now()}`
+      );
+      fs.mkdirSync(sessionDir, { recursive: true });
+
+      // Set up live transcription in the explicit invocation/schedule text channel.
+      let liveTranscription: LiveTranscriptionService | null = null;
+      try {
+        const { getClient } = require('../client');
+        const client = getClient();
+        const guild = client.guilds.cache.get(options.guildId);
+        if (guild) {
+          const targetChannel = await client.channels.fetch(options.textChannelId) as TextChannel;
+          if (targetChannel?.isTextBased?.()) {
+            liveTranscription = new LiveTranscriptionService(targetChannel as TextChannel);
+            console.log(`[WorkerManager] Live transcription will post to #${targetChannel.name}`);
+          }
         }
+      } catch (err) {
+        console.error('[WorkerManager] Failed to set up live transcription:', err);
       }
+
+      const activeMarkerPath = path.join(sessionDir, 'session.active');
+      const callName = options.callName || `Call ${new Date().toISOString().slice(0, 10)}`;
+      this.writeActiveMarker(activeMarkerPath, options, callName, sessionDir);
+
+      const worker = new VoiceWorker({
+        guildId: options.guildId,
+        channelId: options.channelId,
+        outputDir: sessionDir,
+        client: lease.client,
+        liveTranscription: liveTranscription || undefined,
+      });
+
+      try {
+        await worker.start();
+      } catch (err) {
+        this.removeActiveMarker(activeMarkerPath);
+        throw err;
+      }
+
+      const session: RecordingSession = {
+        ...options,
+        callName,
+        worker,
+        liveTranscription,
+        startedAt: Date.now(),
+        silenceCheckTimer: null,
+        sessionDir,
+        activeMarkerPath,
+        lease,
+      };
+      this.sessions.set(options.channelId, session);
+
+      // Start silence-timeout monitoring if configured
+      this.startSilenceMonitor(session);
+
+      console.log(`[WorkerManager] Started recording "${callName}" in channel ${options.channelId}`);
     } catch (err) {
-      console.error('[WorkerManager] Failed to set up live transcription:', err);
-    }
-
-    const activeMarkerPath = path.join(sessionDir, 'session.active');
-    const callName = options.callName || `Call ${new Date().toISOString().slice(0, 10)}`;
-    this.writeActiveMarker(activeMarkerPath, options, callName, sessionDir);
-
-    const worker = new VoiceWorker({
-      guildId: options.guildId,
-      channelId: options.channelId,
-      outputDir: sessionDir,
-      liveTranscription: liveTranscription || undefined,
-    });
-
-    try {
-      await worker.start();
-    } catch (err) {
-      this.removeActiveMarker(activeMarkerPath);
+      pool.release(lease);
       throw err;
+    } finally {
+      this.releasePendingChannel(options.channelId);
     }
-
-    const session: RecordingSession = {
-      ...options,
-      callName,
-      worker,
-      liveTranscription,
-      startedAt: Date.now(),
-      silenceCheckTimer: null,
-      sessionDir,
-      activeMarkerPath,
-    };
-    this.sessions.set(options.channelId, session);
-
-    // Start silence-timeout monitoring if configured
-    this.startSilenceMonitor(session);
-
-    console.log(`[WorkerManager] Started recording "${callName}" in channel ${options.channelId}`);
   }
 
   async stopRecording(channelId: string): Promise<{ fileCount: number; requesterId: string; sessionDir: string }> {
@@ -164,11 +250,12 @@ export class WorkerManager {
     const result = await session.worker.stop();
     this.sessions.delete(channelId);
     this.removeActiveMarker(session.activeMarkerPath);
+    RecorderPool.getInstance().release(session.lease);
 
     console.log(`[WorkerManager] Stopped recording in channel ${channelId}, ${result.files.length} files`);
 
     // Kick off transcription in background
-    this.transcribeAndDeliver(result, session).catch((err) => {
+    this.withPostProcessSlot(() => this.transcribeAndDeliver(result, session)).catch((err) => {
       console.error('[WorkerManager] Transcription failed:', err);
     });
 
@@ -938,6 +1025,7 @@ export class WorkerManager {
       channelId: s.channelId,
       startedAt: s.startedAt,
       speakerCount: s.worker.getSpeakerCount(),
+      recorderLabel: s.lease.label,
     }));
   }
 
@@ -1012,6 +1100,7 @@ export class WorkerManager {
     const result = await session.worker.stop();
     this.sessions.delete(channelId);
     this.removeActiveMarker(session.activeMarkerPath);
+    RecorderPool.getInstance().release(session.lease);
     const sessionDir = result.sessionDir;
 
     console.log(
