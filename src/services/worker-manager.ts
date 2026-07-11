@@ -9,6 +9,7 @@ import { Config } from '../config';
 import { TextChannel, MessageCreateOptions } from 'discord.js';
 import path from 'path';
 import fs from 'fs';
+import { meetingFolderFromCallName } from './call-naming';
 
 export interface RecordingSession {
   guildId: string;
@@ -428,7 +429,7 @@ export class WorkerManager {
     if (StorageService.isConfigured()) {
       try {
         const storage = new StorageService();
-        const uploadResult = await storage.uploadSession(sessionDir);
+        const uploadResult = await storage.uploadSession(sessionDir, meetingFolderFromCallName(session.callName));
         r2Prefix = uploadResult.prefix;
         console.log(`[WorkerManager] Uploaded to R2: ${r2Prefix}`);
       } catch (err) {

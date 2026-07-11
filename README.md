@@ -89,6 +89,8 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
    comma-separated list of names shown in the required `name:` picker. The
    recording date is appended automatically, e.g.
    `RECORD_MEETING_NAMES=SIG-FPT,SIG-P4B,SIG-MRG,SIG-DRG`.
+   R2 uploads are grouped under folders named for these meetings, e.g.
+   `recordings/SIG-FPT/YYYY-MM-DD/...`.
 
 3. **Register slash commands** (against your own app)
    ```bash
