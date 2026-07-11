@@ -248,16 +248,17 @@ export class WorkerManager {
     }
 
     const result = await session.worker.stop();
-    this.sessions.delete(channelId);
-    this.removeActiveMarker(session.activeMarkerPath);
-    RecorderPool.getInstance().release(session.lease);
+    const finalized = this.finalizeStoppedSession(session);
 
     console.log(`[WorkerManager] Stopped recording in channel ${channelId}, ${result.files.length} files`);
 
-    // Kick off transcription in background
-    this.withPostProcessSlot(() => this.transcribeAndDeliver(result, session)).catch((err) => {
-      console.error('[WorkerManager] Transcription failed:', err);
-    });
+    // Kick off transcription in background only for the stop path that owns
+    // finalization. A stale concurrent stop must not duplicate delivery.
+    if (finalized) {
+      this.withPostProcessSlot(() => this.transcribeAndDeliver(result, session)).catch((err) => {
+        console.error('[WorkerManager] Transcription failed:', err);
+      });
+    }
 
     return {
       fileCount: result.files.length,
@@ -1011,6 +1012,20 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Finalize a stopped session exactly once. Stop paths can race (manual stop,
+   * empty-channel auto-stop, silence auto-stop), so never delete/release by
+   * channel id alone: a stale stop could otherwise release a recorder lease now
+   * owned by a newer same-guild session.
+   */
+  private finalizeStoppedSession(session: RecordingSession): boolean {
+    if (this.sessions.get(session.channelId) !== session) return false;
+    this.sessions.delete(session.channelId);
+    this.removeActiveMarker(session.activeMarkerPath);
+    RecorderPool.getInstance().release(session.lease);
+    return true;
+  }
+
   isRecording(channelId: string): boolean {
     return this.sessions.has(channelId);
   }
@@ -1098,10 +1113,13 @@ export class WorkerManager {
 
     // Stop the worker (disconnects from voice)
     const result = await session.worker.stop();
-    this.sessions.delete(channelId);
-    this.removeActiveMarker(session.activeMarkerPath);
-    RecorderPool.getInstance().release(session.lease);
+    const finalized = this.finalizeStoppedSession(session);
     const sessionDir = result.sessionDir;
+
+    if (!finalized) {
+      console.log(`[SilenceMonitor] Session ${channelId} was already finalized by another stop path`);
+      return;
+    }
 
     console.log(
       `[SilenceMonitor] Stopped recording in channel ${channelId} ` +
