@@ -1,7 +1,6 @@
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
-  GuildMember,
   ChannelType,
   PermissionFlagsBits,
 } from 'discord.js';
@@ -20,9 +19,9 @@ export const stopCommand = {
     .addChannelOption((option) =>
       option
         .setName('channel')
-        .setDescription('Voice channel to stop recording (defaults to your current channel)')
+        .setDescription('Voice channel to stop recording')
         .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
-        .setRequired(false)
+        .setRequired(true)
     ),
 
   async execute(interaction: ChatInputCommandInteraction) {
@@ -41,42 +40,14 @@ export const stopCommand = {
       return;
     }
 
-    const member = interaction.member as GuildMember;
     const manager = WorkerManager.getInstance();
 
-    // Resolve target channel: explicit option > user's voice channel > only active recording in guild
-    let targetChannelId: string | null = null;
-
-    const channelOption = interaction.options.getChannel('channel');
-    if (channelOption) {
-      if ('guildId' in channelOption && channelOption.guildId !== interaction.guild.id) {
-        await interaction.reply({ content: '❌ That voice channel belongs to a different server.', ephemeral: true });
-        return;
-      }
-      targetChannelId = channelOption.id;
-    } else if (member.voice.channel) {
-      targetChannelId = member.voice.channel.id;
-    } else {
-      // Fall back: if there's exactly one active recording in this guild, use that
-      const guildSessions = manager.getActiveSessions().filter(
-        (s) => s.guildId === interaction.guild!.id
-      );
-      if (guildSessions.length === 1) {
-        targetChannelId = guildSessions[0].channelId;
-      } else if (guildSessions.length > 1) {
-        const channelList = guildSessions.map((s) => `<#${s.channelId}>`).join(', ');
-        await interaction.reply({
-          content: `❌ Multiple active recordings in this server (${channelList}). Specify which channel to stop with \`/stop channel:\`.`,
-          ephemeral: true,
-        });
-        return;
-      }
-    }
-
-    if (!targetChannelId) {
-      await interaction.reply({ content: '❌ No active recordings in this server. Specify a channel or join one.', ephemeral: true });
+    const channelOption = interaction.options.getChannel('channel', true);
+    if ('guildId' in channelOption && channelOption.guildId !== interaction.guild.id) {
+      await interaction.reply({ content: '❌ That voice channel belongs to a different server.', ephemeral: true });
       return;
     }
+    const targetChannelId = channelOption.id;
 
     const session = manager.getSession(targetChannelId);
     if (!session) {

@@ -14,9 +14,10 @@ optionally emails it to your group.
 
 ## Features
 
-- **`/record`** — Join a voice channel and start recording (optional `name:`). Usable by server managers or users granted access with `/record-access grant`.
+- **`/record`** — Start recording a voice channel (required `channel:`, optional `name:`). Usable by server managers or users granted access with `/record-access grant`.
 - **`/record-access`** — Admin command to grant/list/revoke non-admin users who may use `/record`.
-- **`/stop`** — Stop recording, transcribe, and post results.
+- **`/stop`** — Stop recording a voice channel (required `channel:`), transcribe, and post results.
+- **Concurrent recordings** *(optional)* — Record several meetings in the same server at once by supplying extra bot tokens via `DISCORD_TOKENS`.
 - **`/status`** — Show active recording sessions.
 - **Real-time transcription** — Live transcript streamed to a text channel as people talk.
 - **Batch transcription** — High-quality Deepgram Nova-3 transcription with speaker diarization on stop.
@@ -71,6 +72,18 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
    Required: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DEEPGRAM_API_KEY`.
    Everything else is optional. See [DISCORD_SETUP.md](DISCORD_SETUP.md) for
    creating the Discord app and inviting the bot.
+
+   **Multiple concurrent recordings per server** *(optional)*: Discord allows
+   each bot identity only one voice connection per server, so recording N
+   meetings in the same server at once requires N bot tokens. Set
+   `DISCORD_TOKENS` (comma-separated, primary first) instead of
+   `DISCORD_TOKEN` — the token count is the per-server concurrency limit.
+   The primary token handles all slash commands and delivery (and can record
+   too); the rest are voice-only recorder identities. For each extra token:
+   create another bot application in the Discord Developer Portal and invite
+   it to your server(s) with Connect + Speak permissions (a recorder not
+   invited to a server simply doesn't count toward that server's capacity).
+   Single-token setups can keep using `DISCORD_TOKEN` unchanged.
 
 3. **Register slash commands** (against your own app)
    ```bash
