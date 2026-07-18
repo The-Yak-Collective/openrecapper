@@ -11,8 +11,13 @@
 1. In your application, go to **Bot** (left sidebar)
 2. Click **"Reset Token"** → copy the token → this is your `DISCORD_TOKEN`
 3. Under **Privileged Gateway Intents**, enable:
-   - ✅ **Server Members Intent** (to resolve display names)
-   - ✅ **Message Content Intent** (optional, for future features)
+   - ✅ **Message Content Intent** — **required.** The bot requests this
+     privileged intent on startup, so it must be enabled or login fails with a
+     "disallowed intents" error. (It's used to forward message text for the
+     optional Grapevine feature, but is requested unconditionally.)
+   - ⬜ **Server Members Intent** — not required. Display names are resolved by
+     fetching individual members over REST, which doesn't need this intent.
+     Leave it off unless you add a feature that needs the full member list.
 
 > ⚠️ **Never share or commit your bot token.** If leaked, immediately reset it in the Developer Portal.
 
@@ -22,14 +27,15 @@ The bot needs these permissions:
 
 | Permission | Why |
 |---|---|
+| View Channel | See the text/voice channels it operates in |
 | Connect | Join voice channels |
-| Speak | Required for voice connection |
-| Use Voice Activity | Receive audio from users |
-| Send Messages | Post transcripts to text channels |
+| Speak | Required for the voice connection (the bot stays muted) |
+| Send Messages | Post transcripts/summaries to text channels |
 | Attach Files | Upload transcript & audio files |
-| Read Message History | Context for transcript channel |
+| Embed Links | Render R2 download links posted in results |
+| Read Message History | Context for the transcript channel |
 
-**Permission integer:** `3165184`
+**Permission integer:** `3263488`
 
 ## 4. Generate the Invite URL
 
@@ -40,7 +46,7 @@ The bot needs these permissions:
 3. Select bot permissions (see table above), or use this direct URL:
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=3165184&scope=bot%20applications.commands
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=3263488&scope=bot%20applications.commands
 ```
 
 4. Replace `YOUR_CLIENT_ID` with your Application ID
@@ -73,7 +79,9 @@ Transcription (both live and batch) uses [Deepgram](https://deepgram.com/).
 ## 6. Register Slash Commands & Start
 
 ```bash
-# Register /record, /stop, /status with Discord
+# Register the slash commands (/record, /stop, /status, /schedule,
+# /record-access, /set-summary-channel, /openrecapper-issue, /grapevine,
+# /test-schedule) with Discord
 npm run register
 
 # Start the bot
