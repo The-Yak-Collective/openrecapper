@@ -70,6 +70,16 @@ export const recordCommand = {
 
     try {
       const nameOpt = interaction.options.getString('name', true);
+      // Hard gate: only allow names from the configured list. Discord's choice
+      // dropdown enforces this client-side, but we re-check server-side against
+      // the live config so a stale/removed choice or a hand-crafted interaction
+      // can't smuggle in an arbitrary meeting name.
+      if (!Config.RECORD_MEETING_NAMES.includes(nameOpt)) {
+        await interaction.editReply(
+          `❌ "${nameOpt}" is not an allowed meeting name. Pick one of: ${Config.RECORD_MEETING_NAMES.join(', ')}.`
+        );
+        return;
+      }
       const callName = adHocCallName(nameOpt);
 
       await manager.startRecording({
