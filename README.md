@@ -14,10 +14,13 @@ optionally emails it to your group.
 
 ## Features
 
-- **`/record`** — Join a voice channel and start recording (optional `name:`). Usable by server managers or users granted access with `/record-access grant`.
+- **`/record`** — Start recording a voice channel (required `channel:` and `name:` picker). Usable by server managers or users granted access with `/record-access grant`.
 - **`/record-access`** — Admin command to grant/list/revoke non-admin users who may use `/record`.
-- **`/stop`** — Stop recording, transcribe, and post results.
+- **`/stop`** — Stop recording a voice channel (required `channel:`), transcribe, and post results.
+- **Concurrent recordings** *(optional)* — Record several meetings in the same server at once by supplying extra bot tokens via `DISCORD_TOKENS`.
 - **`/status`** — Show active recording sessions.
+- **`/set-summary-channel`** — Choose which text channel session summaries are posted in (`set`/`clear`/`show`); defaults to the channel where `/record` ran.
+- **`/openrecapper-issue`** — Describe a bug, feature, or idea and have it filed as a GitHub issue.
 - **Real-time transcription** — Live transcript streamed to a text channel as people talk.
 - **Batch transcription** — High-quality Deepgram Nova-3 transcription with speaker diarization on stop.
 - **AI session summary** *(optional)* — A structured Markdown recap after the call (overview, key points, questions/disagreements, references, action items, quotes).
@@ -72,6 +75,27 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
    Everything else is optional. See [DISCORD_SETUP.md](DISCORD_SETUP.md) for
    creating the Discord app and inviting the bot.
 
+   **Multiple concurrent recordings per server** *(optional)*: Discord allows
+   each bot identity only one voice connection per server, so recording N
+   meetings in the same server at once requires N bot tokens. Set
+   `DISCORD_TOKENS` (comma-separated, primary first) instead of
+   `DISCORD_TOKEN` — the token count is the per-server concurrency limit.
+   The primary token handles all slash commands and delivery (and can record
+   too); the rest are voice-only recorder identities. For each extra token:
+   create another bot application in the Discord Developer Portal and invite
+   it to your server(s) with Connect + Speak permissions (a recorder not
+   invited to a server simply doesn't count toward that server's capacity).
+   Single-token setups can keep using `DISCORD_TOKEN` unchanged.
+
+   **Meeting names for `/record`**: set `RECORD_MEETING_NAMES` to a
+   comma-separated list of names shown in the required `name:` picker. The list
+   is a hard allow-list — `/record` validates the chosen name against it
+   server-side and rejects anything not on the list, so only these names can
+   ever be recorded. The recording date is appended automatically, e.g.
+   `RECORD_MEETING_NAMES=SIG-FPT,SIG-P4B,SIG-MRG,SIG-DRG`.
+   R2 uploads are grouped under folders named for these meetings, e.g.
+   `recordings/SIG-FPT/YYYY-MM-DD/...`.
+
 3. **Register slash commands** (against your own app)
    ```bash
    npm run register
@@ -87,13 +111,19 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
 
 ## Bot permissions
 
-Permissions integer `3165184`: Connect, Speak (required even though the bot is
-muted), Send Messages, Attach Files, Read Message History, Use Slash Commands.
+Permissions integer `3263488`: View Channel, Connect, Speak (required even
+though the bot is muted), Send Messages, Attach Files, Embed Links, Read Message
+History. (Use Slash Commands is granted by the `applications.commands` scope, not
+a permission bit.)
 
 OAuth2 scopes: `bot`, `applications.commands`.
 
-Intents: `Guilds`, `GuildVoiceStates` (+ `GuildMessageReactions` and
-`MessageContent` only if you use Grapevine).
+Intents (all requested on startup): `Guilds`, `GuildVoiceStates`,
+`GuildMessages`, `GuildMessageReactions`, and `MessageContent`. The last is a
+**privileged** intent, so **Message Content Intent must be enabled** in the
+Developer Portal or login fails — see [DISCORD_SETUP.md](DISCORD_SETUP.md).
+`GuildMessageReactions` + `MessageContent` are only actually used by Grapevine,
+but are requested regardless.
 
 ## AI summaries & email (optional)
 
@@ -113,6 +143,15 @@ Implement those against whatever LLM/email services you prefer, set `RELAY_URL`
 and `RELAY_TOKEN`, and the bot will post AI summaries and send email after each
 call. Tune `SUMMARY_GROUP_NAME` to fit your context (e.g. “engineering
 standup”, “book club”).
+
+**Reference implementation:** a ready-made relay ships in
+[`relay-exedev/`](relay-exedev/) — a small Node service that bridges these two
+endpoints to [exe.dev](https://exe.dev)'s LLM and email gateways, so the bot
+gets summaries and email without you holding any third-party API keys. It must
+run on an exe.dev VM (the gateways are link-local). See
+[`relay-exedev/README.md`](relay-exedev/README.md) for its env vars and
+endpoint reference, and `relay-exedev/relay.service.example` for a sample
+systemd unit. On any other host, use it as a template for your own relay.
 
 ## Scheduled recording (optional)
 
@@ -177,20 +216,30 @@ src/
 ├── client.ts                         # Shared Discord client reference
 ├── config.ts                         # Environment config
 ├── register-commands.ts              # Slash command registration script
-├── commands/                         # /record /record-access /stop /status /test-schedule /grapevine
+├── commands/                         # /record /record-access /stop /status /schedule
+│                                     #   /test-schedule /set-summary-channel
+│                                     #   /openrecapper-issue /grapevine
 ├── workers/
 │   └── voice-worker.ts               # Voice channel recorder (per-user streams)
 └── services/
     ├── worker-manager.ts             # Session orchestration, transcription, upload, summary, email
+    ├── recorder-pool.ts              # Leases recorder identities for concurrent recordings
     ├── opus-decoder.ts               # Opus → PCM transform stream
     ├── silence-filler.ts             # Pads gaps so per-user tracks stay time-aligned
     ├── transcription-service.ts      # Deepgram batch transcription (REST)
     ├── live-transcription-service.ts # Deepgram real-time streaming (WebSocket)
     ├── storage-service.ts            # S3-compatible (R2) upload
+    ├── recording-cleanup.ts          # Prunes old audio files on a retention schedule
     ├── scheduler.ts                  # node-cron auto-join for standing calls
+    ├── schedule-store.ts             # Persists standing-call schedules (data/schedules.json)
+    ├── cron-format.ts                # Translates /schedule inputs ↔ 5-field cron expressions
     ├── call-naming.ts                # Call naming + ISO-date slugs
+    ├── record-permission-store.ts    # Per-guild /record access allow-list
+    ├── summary-channel-store.ts      # Per-guild override for where summaries are posted
     ├── summary-service.ts            # AI session summary
     ├── relay-client.ts               # Relay client (LLM summary + email)
+    ├── issue-draft-service.ts        # Turns /openrecapper-issue text into an issue draft (via relay)
+    ├── github-issue-client.ts        # Files GitHub issues via a fine-grained PAT
     ├── health-check.ts               # Startup Deepgram/relay health probes
     └── grapevine-service.ts          # Cross-server reaction forwarding
 ```

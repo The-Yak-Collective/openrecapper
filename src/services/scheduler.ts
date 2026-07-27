@@ -1,5 +1,6 @@
 import * as cron from 'node-cron';
-import { WorkerManager } from './worker-manager';
+import { WorkerManager, AlreadyRecordingError } from './worker-manager';
+import { NoRecorderAvailableError } from './recorder-pool';
 import { getClient } from '../client';
 import { TextChannel, ChannelType } from 'discord.js';
 import { isoDate } from './call-naming';
@@ -77,13 +78,28 @@ export async function triggerScheduledRecording(id: string): Promise<string> {
     `[Scheduler] Firing scheduled recording "${callName}" [${schedule.id}] — guild=${schedule.guildId} voice=${schedule.voiceChannelId} text=${textChannelId}`,
   );
 
-  await manager.startRecording({
-    guildId: schedule.guildId,
-    channelId: schedule.voiceChannelId,
-    requesterId: botUserId,
-    textChannelId,
-    callName,
-  });
+  try {
+    await manager.startRecording({
+      guildId: schedule.guildId,
+      channelId: schedule.voiceChannelId,
+      requesterId: botUserId,
+      textChannelId,
+      callName,
+    });
+  } catch (err) {
+    if (err instanceof NoRecorderAvailableError) {
+      const msg = `⚠️ Scheduled recording "${callName}" skipped — all recorder bots are busy in this server.`;
+      console.warn(`[Scheduler] ${msg}`);
+      await textChannel.send(msg).catch(() => {});
+      return msg;
+    }
+    if (err instanceof AlreadyRecordingError) {
+      const msg = `Already recording <#${schedule.voiceChannelId}>, skipping scheduled trigger`;
+      console.log(`[Scheduler] ${msg}`);
+      return msg;
+    }
+    throw err;
+  }
 
   const msg = `Scheduled recording started in <#${schedule.voiceChannelId}>`;
   console.log(`[Scheduler] ${msg}`);

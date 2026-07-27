@@ -9,6 +9,7 @@ import * as dgVoice from '@discordjs/voice';
 import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import { Transform } from 'stream';
+import { Client } from 'discord.js';
 import { OpusDecodingStream } from '../services/opus-decoder';
 import { SilenceFiller } from '../services/silence-filler';
 import { LiveTranscriptionService } from '../services/live-transcription-service';
@@ -17,6 +18,9 @@ export interface VoiceWorkerOptions {
   guildId: string;
   channelId: string;
   outputDir: string;
+  // The identity that opens the voice connection (a recorder-pool lease's
+  // client). Text/REST work stays on the primary client.
+  client: Client;
   liveTranscription?: LiveTranscriptionService;
 }
 
@@ -59,8 +63,7 @@ export class VoiceWorker {
   async start(): Promise<void> {
     this.sessionStartedAt = Date.now();
     this.lastVoiceActivityAt = 0; // No activity until we receive actual audio
-    const { getClient } = require('../client');
-    const client = getClient();
+    const client = this.options.client;
 
     const guild = client.guilds.cache.get(this.options.guildId);
     if (!guild) throw new Error(`Guild ${this.options.guildId} not found`);
@@ -68,6 +71,11 @@ export class VoiceWorker {
     this.connection = joinVoiceChannel({
       channelId: this.options.channelId,
       guildId: this.options.guildId,
+      // @discordjs/voice keys connections by (group, guildId) and group
+      // defaults to 'default'. With several clients in one process recording
+      // the same guild, a shared group would make the second join clobber the
+      // first connection — so each client gets its own group.
+      group: client.user!.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: true,
@@ -136,7 +144,12 @@ export class VoiceWorker {
     // for each user is opened lazily on their first decoded PCM chunk (see
     // startUserStream), so silent listeners do not each hold open a Deepgram
     // websocket before they actually speak.
-    this.subscribeExistingMembers(receiver, client);
+    // Enumerate channel members via the PRIMARY client (its member cache is
+    // warm from long-running gateway traffic; a freshly-logged-in recorder's
+    // is not). The receiver we subscribe on still belongs to this worker's
+    // recorder connection — enumeration and subscription are separable.
+    const { getClient } = require('../client');
+    this.subscribeExistingMembers(receiver, getClient());
   }
 
   private subscribeExistingMembers(receiver: any, client: any): void {

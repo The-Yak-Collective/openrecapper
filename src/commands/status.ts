@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
 import { WorkerManager } from '../services/worker-manager';
+import { RecorderPool } from '../services/recorder-pool';
 
 export const statusCommand = {
   data: new SlashCommandBuilder()
@@ -14,9 +15,13 @@ export const statusCommand = {
 
     const manager = WorkerManager.getInstance();
     const sessions = manager.getActiveSessions().filter((s) => s.guildId === interaction.guildId);
+    const pool = RecorderPool.getInstance();
 
     if (sessions.length === 0) {
-      await interaction.reply({ content: '📭 No active recording sessions.', ephemeral: true });
+      await interaction.reply({
+        content: `📭 No active recording sessions (${pool.capacityForGuild(interaction.guildId)} recorder(s) available).`,
+        ephemeral: true,
+      });
       return;
     }
 
@@ -24,9 +29,10 @@ export const statusCommand = {
       const duration = Math.round((Date.now() - s.startedAt) / 1000);
       const mins = Math.floor(duration / 60);
       const secs = duration % 60;
-      return `🔴 <#${s.channelId}> — ${mins}m ${secs}s — ${s.speakerCount} speaker(s)`;
+      return `🔴 <#${s.channelId}> — ${mins}m ${secs}s — ${s.speakerCount} speaker(s) — 🎙️ ${s.recorderLabel}`;
     });
 
-    await interaction.reply({ content: `**Active Sessions:**\n${lines.join('\n')}`, ephemeral: true });
+    const header = `**Active Sessions** (${pool.inUseForGuild(interaction.guildId)}/${pool.capacityForGuild(interaction.guildId)} recorders in use):`;
+    await interaction.reply({ content: `${header}\n${lines.join('\n')}`, ephemeral: true });
   },
 };

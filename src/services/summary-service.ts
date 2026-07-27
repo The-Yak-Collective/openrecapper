@@ -9,6 +9,14 @@ import { RelayClient } from './relay-client';
  * Skips gracefully when the relay is not configured so the rest of the
  * pipeline is unaffected.
  */
+/**
+ * Soft length target for summaries, stated in the prompt so the model aims for
+ * it and ends cleanly. The relay's hard max_tokens cap gets 2x headroom so the
+ * API limit never truncates output mid-sentence.
+ */
+const TARGET_TOKENS = 3000;
+const TARGET_WORDS = 2250; // ~0.75 words per token
+
 export class SummaryService {
   static isConfigured(): boolean {
     return RelayClient.isConfigured();
@@ -24,6 +32,7 @@ export class SummaryService {
       `Capture the substance of the discussion (ideas, arguments, disagreements), not just logistics. Attribute notable points to speakers when the transcript makes the attribution clear; otherwise keep it general.`,
       `IMPORTANT — names: the user message provides an authoritative "Participants" roster of attendee names. The transcript is auto-generated speech-to-text, so it often misspells names phonetically (e.g. a surname "Acks" may appear as "Aks"). Always spell every participant's name exactly as it appears in the roster, and silently correct any transcript spelling that clearly refers to a roster participant. Only use a name not in the roster if it plainly refers to a third party (e.g. a cited author) and not to an attendee.`,
       `Keep it concise and skimmable. Use the exact Markdown section structure requested by the user. Omit a section (with a short "None noted." line) if the transcript genuinely contains nothing for it.`,
+      `Length: aim for no more than about ${TARGET_WORDS} words total. This is a soft target, not a hard cutoff — if the session was long, compress the less important points rather than running over, and always finish with complete sentences and sections.`,
     ].join('\n');
   }
 
@@ -67,8 +76,13 @@ export class SummaryService {
   /**
    * Generate a Markdown summary from the transcript text. Returns null if not
    * configured or on error (caller should treat summary as optional).
+   * `truncated` means the model hit the hard token cap and the summary is cut
+   * off mid-output.
    */
-  static async summarize(transcriptText: string, participants: string[]): Promise<string | null> {
+  static async summarize(
+    transcriptText: string,
+    participants: string[]
+  ): Promise<{ text: string; truncated: boolean } | null> {
     if (!this.isConfigured()) {
       console.warn('[Summary] Relay not configured (RELAY_TOKEN unset), skipping AI summary');
       return null;
@@ -91,13 +105,17 @@ export class SummaryService {
     }
 
     try {
-      const text = await RelayClient.summarize(this.systemPrompt(), this.userPrompt(body, participants));
+      const { text, truncated } = await RelayClient.summarize(
+        this.systemPrompt(),
+        this.userPrompt(body, participants),
+        TARGET_TOKENS * 2
+      );
       if (!text) {
         console.error('[Summary] Relay returned no content');
         return null;
       }
-      console.log(`[Summary] Generated summary (${text.length} chars) via relay`);
-      return text;
+      console.log(`[Summary] Generated summary (${text.length} chars${truncated ? ', TRUNCATED at hard cap' : ''}) via relay`);
+      return { text, truncated };
     } catch (err: any) {
       console.error(`[Summary] Failed to generate summary: ${err?.message || err}`);
       return null;

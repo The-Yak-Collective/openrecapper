@@ -46,3 +46,9 @@ export function adHocCallName(name: string, date: Date = new Date()): string {
 export function slugifyCallName(name: string): string {
   return name.trim().replace(/[^\w.-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
 }
+
+/** Meeting folder for a call name; strips the trailing auto-appended ISODATE. */
+export function meetingFolderFromCallName(callName: string): string {
+  const meetingName = callName.trim().replace(/\s+\d{4}-\d{2}-\d{2}$/, '');
+  return slugifyCallName(meetingName || callName) || 'UNNAMED-MEETING';
+}

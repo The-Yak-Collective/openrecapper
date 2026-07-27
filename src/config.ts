@@ -4,12 +4,32 @@ import path from 'path';
 // Load .env from project root (ignored in production if not present)
 config({ path: path.join(__dirname, '..', '.env') });
 
+// Comma-separated bot tokens. tokens[0] is the "primary" (slash commands,
+// delivery, member resolution — and it can record too). Additional tokens are
+// voice-only recorder identities. Number of tokens = max concurrent
+// recordings per server. Falls back to the legacy single DISCORD_TOKEN.
+const tokens = (process.env.DISCORD_TOKENS || process.env.DISCORD_TOKEN || '')
+  .split(',')
+  .map((t) => t.trim())
+  .filter(Boolean);
+
+const recordMeetingNames = (process.env.RECORD_MEETING_NAMES || 'UNNAMED-MEETING')
+  .split(',')
+  .map((t) => t.trim())
+  .filter(Boolean);
+if (recordMeetingNames.length === 0) recordMeetingNames.push('UNNAMED-MEETING');
+
 export const Config = {
-  DISCORD_TOKEN: process.env.DISCORD_TOKEN!,
+  DISCORD_TOKENS: tokens,
+  // Primary token — kept so existing single-token call sites
+  // (register-commands.ts, index.ts) stay unchanged.
+  DISCORD_TOKEN: tokens[0] ?? '',
   DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID!,
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY!,
   // Display name used in health-check alerts and email subjects.
   BOT_NAME: process.env.BOT_NAME || 'OpenRecapper',
+  // Meeting names offered by /record's name option. Date is appended automatically.
+  RECORD_MEETING_NAMES: recordMeetingNames,
   RECORDINGS_DIR: process.env.RECORDINGS_DIR || path.join(__dirname, '..', 'recordings'),
   R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID || '',
   R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID || '',
@@ -63,7 +83,7 @@ export const Config = {
 
 export function validateConfig() {
   const missing: string[] = [];
-  if (!Config.DISCORD_TOKEN) missing.push('DISCORD_TOKEN');
+  if (Config.DISCORD_TOKENS.length === 0) missing.push('DISCORD_TOKENS (or DISCORD_TOKEN)');
   if (!Config.DISCORD_CLIENT_ID) missing.push('DISCORD_CLIENT_ID');
   if (!Config.DEEPGRAM_API_KEY) missing.push('DEEPGRAM_API_KEY');
   if (missing.length > 0) {

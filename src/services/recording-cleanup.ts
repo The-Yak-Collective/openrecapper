@@ -21,6 +21,22 @@ const LARGE_FILE_PATTERNS = ['.pcm', '.wav'];
 /** Files to always keep (even if they match a large-file pattern). */
 const KEEP_FILES = new Set(['transcript.txt', 'transcript.srt', 'metadata.json', 'summary.md']);
 
+/**
+ * Marker file that protects a session directory from cleanup. If a directory
+ * contains this file (case-insensitive), its audio files are never deleted.
+ * Drop one in manually to preserve an orphaned/unprocessed session.
+ */
+const PROTECT_MARKER = 'do_not_delete.md';
+
+/** Whether a session directory is protected by a DO_NOT_DELETE marker. */
+function isSessionProtected(sessionDir: string): boolean {
+  try {
+    return fs.readdirSync(sessionDir).some((f) => f.toLowerCase() === PROTECT_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 interface CleanupResult {
   /** Number of session directories scanned. */
   scanned: number;
@@ -100,6 +116,12 @@ export function cleanupOldRecordings(): CleanupResult {
     }
 
     result.scanned++;
+
+    // Protected by a DO_NOT_DELETE marker — never touch this session's files
+    if (isSessionProtected(sessionDir)) {
+      result.skipped++;
+      continue;
+    }
 
     // Extract timestamp from directory name
     const sessionTs = getSessionTimestamp(entry);

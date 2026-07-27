@@ -10,6 +10,7 @@ import { recordAccessCommand } from './commands/record-access';
 import { setSummaryChannelCommand } from './commands/set-summary-channel';
 import { openrecapperIssueCommand } from './commands/openrecapper-issue';
 import { WorkerManager } from './services/worker-manager';
+import { RecorderPool } from './services/recorder-pool';
 import { testScheduleCommand } from './commands/test-schedule';
 import { startScheduler, stopScheduler } from './services/scheduler';
 import { loadGrapevineConfig, handleReactionAdd } from './services/grapevine-service';
@@ -55,6 +56,19 @@ commands.set(setSummaryChannelCommand.data.name, setSummaryChannelCommand);
 commands.set(openrecapperIssueCommand.data.name, openrecapperIssueCommand);
 
 setClient(client);
+
+const pool = RecorderPool.getInstance();
+pool.register(client); // primary doubles as a recorder
+
+// Voice-only recorder identities (tokens[1..]) — minimal intents; all text,
+// interaction, and member-resolution work stays on the primary.
+const recorderClients: Client[] = Config.DISCORD_TOKENS.slice(1).map(() =>
+  new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] })
+);
+for (const rc of recorderClients) {
+  rc.once(Events.ClientReady, (c) => console.log(`✅ Recorder logged in as ${c.user.tag}`));
+  pool.register(rc);
+}
 
 client.once(Events.ClientReady, (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
@@ -149,6 +163,7 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
     stopScheduler();
     await WorkerManager.getInstance().stopAllActiveSessions(signal);
     await client.destroy();
+    await Promise.allSettled(recorderClients.map((rc) => rc.destroy()));
     console.log('[Shutdown] Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
@@ -160,4 +175,11 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
 process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 
-client.login(Config.DISCORD_TOKEN);
+client.login(Config.DISCORD_TOKENS[0]);
+// Recorder logins are independent: one failing just reduces per-guild
+// capacity (the pool skips non-ready clients); it must not take the bot down.
+Config.DISCORD_TOKENS.slice(1).forEach((token, i) => {
+  recorderClients[i].login(token).catch((err) => {
+    console.error(`[Startup] Recorder client ${i + 1} failed to log in (capacity reduced):`, err);
+  });
+});

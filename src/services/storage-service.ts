@@ -31,7 +31,7 @@ export class StorageService {
    * Upload all recording artifacts from a session directory to R2.
    * Returns the R2 prefix (folder path) where files were stored.
    */
-  async uploadSession(sessionDir: string): Promise<{ prefix: string; uploadedFiles: string[] }> {
+  async uploadSession(sessionDir: string, meetingFolder?: string): Promise<{ prefix: string; uploadedFiles: string[] }> {
     const dirName = path.basename(sessionDir);
     // Parse timestamp from dir name: guildId_channelId_timestamp
     const parts = dirName.split('_');
@@ -39,7 +39,9 @@ export class StorageService {
     const date = new Date(timestamp);
     const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
 
-    const prefix = `recordings/${dateStr}/${dirName}`;
+    const prefix = meetingFolder
+      ? `recordings/${meetingFolder}/${dateStr}/${dirName}`
+      : `recordings/${dateStr}/${dirName}`;
     const uploadedFiles: string[] = [];
 
     // Upload all files in the session directory

@@ -1,31 +1,36 @@
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
-  GuildMember,
   ChannelType,
   PermissionFlagsBits,
 } from 'discord.js';
-import { WorkerManager } from '../services/worker-manager';
+import { WorkerManager, AlreadyRecordingError } from '../services/worker-manager';
+import { RecorderPool, NoRecorderAvailableError } from '../services/recorder-pool';
 import { adHocCallName } from '../services/call-naming';
 import { hasRecordPermission } from '../services/record-permission-store';
+import { Config } from '../config';
 
 export const recordCommand = {
   data: new SlashCommandBuilder()
     .setName('record')
-    .setDescription('Start recording the voice channel you are in')
+    .setDescription('Start recording a voice channel')
     .addChannelOption((option) =>
       option
         .setName('channel')
-        .setDescription('Voice channel to record (defaults to your current channel)')
+        .setDescription('Voice channel to record')
         .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
-        .setRequired(false)
+        .setRequired(true)
     )
-    .addStringOption((option) =>
+    .addStringOption((option) => {
       option
         .setName('name')
-        .setDescription('Name for this ad hoc call (date is appended automatically)')
-        .setRequired(false)
-    ),
+        .setDescription('Meeting name (date is appended automatically)')
+        .setRequired(true);
+      for (const name of Config.RECORD_MEETING_NAMES.slice(0, 25)) {
+        option.addChoices({ name, value: name });
+      }
+      return option;
+    }),
 
   async execute(interaction: ChatInputCommandInteraction) {
     if (!interaction.guild) {
@@ -43,11 +48,10 @@ export const recordCommand = {
       return;
     }
 
-    const member = interaction.member as GuildMember;
-    const targetChannel = interaction.options.getChannel('channel') ?? member.voice.channel;
+    const targetChannel = interaction.options.getChannel('channel');
 
     if (!targetChannel || (targetChannel.type !== ChannelType.GuildVoice && targetChannel.type !== ChannelType.GuildStageVoice)) {
-      await interaction.reply({ content: '❌ Join a voice channel first, or specify one.', ephemeral: true });
+      await interaction.reply({ content: '❌ Pick a voice or stage channel to record.', ephemeral: true });
       return;
     }
     if (!('guildId' in targetChannel) || targetChannel.guildId !== interaction.guild.id) {
@@ -65,8 +69,18 @@ export const recordCommand = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const nameOpt = interaction.options.getString('name');
-      const callName = adHocCallName(nameOpt || 'Ad hoc');
+      const nameOpt = interaction.options.getString('name', true);
+      // Hard gate: only allow names from the configured list. Discord's choice
+      // dropdown enforces this client-side, but we re-check server-side against
+      // the live config so a stale/removed choice or a hand-crafted interaction
+      // can't smuggle in an arbitrary meeting name.
+      if (!Config.RECORD_MEETING_NAMES.includes(nameOpt)) {
+        await interaction.editReply(
+          `❌ "${nameOpt}" is not an allowed meeting name. Pick one of: ${Config.RECORD_MEETING_NAMES.join(', ')}.`
+        );
+        return;
+      }
+      const callName = adHocCallName(nameOpt);
 
       await manager.startRecording({
         guildId: interaction.guild.id,
@@ -78,6 +92,18 @@ export const recordCommand = {
 
       await interaction.editReply(`🔴 Recording started for **${callName}** in <#${targetChannel.id}>. Use \`/stop\` to end.`);
     } catch (error) {
+      if (error instanceof AlreadyRecordingError) {
+        await interaction.editReply(`⚠️ Already recording <#${targetChannel.id}>.`);
+        return;
+      }
+      if (error instanceof NoRecorderAvailableError) {
+        const pool = RecorderPool.getInstance();
+        const cap = pool.capacityForGuild(interaction.guild.id);
+        await interaction.editReply(
+          `⚠️ All ${cap} recorder bot(s) in this server are busy. Try again when a meeting ends.`
+        );
+        return;
+      }
       console.error('[Command:/record] Failed to start recording:', error);
       await interaction.editReply('❌ Failed to start recording. Check the bot logs for details.');
     }
