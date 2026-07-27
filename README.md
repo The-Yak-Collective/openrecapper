@@ -160,14 +160,31 @@ runtime with the **`/schedule`** command (requires Manage Server):
 
 ```
 /schedule add voice_channel:#standup days:mon,fri time:11:15 text_channel:#transcriptions
+/schedule add voice_channel:#biweekly days:wed time:11:15 every:biweekly
+/schedule add voice_channel:#townhall date:2026-08-15 time:16:00   # one-off
 /schedule list
 /schedule edit | remove | pause | resume
 ```
 
 `days` accepts names/aliases (`mon,fri`, `weekdays`, `weekends`, `daily`),
 `time` is 24-hour `HH:MM`, and `timezone` is any IANA zone (default
-`America/New_York`). Schedules persist to `data/schedules.json` and survive
-restarts. Each active schedule must have an explicit text channel for live
+`America/New_York`).
+
+**Recurrence cadence** — the optional `every` option controls how often a
+recurring schedule fires: `weekly` (default), `biweekly` (every 2 weeks), or
+`"N weeks"` (up to 12). Cron itself can't express week parity, so biweekly
+schedules fire on the cron's weekly cadence but a fire-time gate skips the
+off-weeks. The phase is anchored to the **next matching occurrence** at
+creation time (shown in `/schedule list` as `(from YYYY-MM-DD)`); anchoring to
+a real date — rather than odd/even ISO week numbers — keeps the every-other-week
+rhythm correct across year boundaries.
+
+**One-off calls** — supply `date:YYYY-MM-DD` instead of `days` for a call that
+fires once at the given date/time and then deletes itself automatically. (`every`
+does not apply to one-offs.) `/schedule edit` can convert between recurring and
+one-off by switching the `days`/`date` option.
+
+Schedules persist to `data/schedules.json` and survive restarts. Each active schedule must have an explicit text channel for live
 transcript/results (`/schedule add text_channel:...` or `/schedule edit ...
 text_channel:...`). Use `/test-schedule` to trigger one manually.
 

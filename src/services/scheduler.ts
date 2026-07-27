@@ -4,6 +4,7 @@ import { NoRecorderAvailableError } from './recorder-pool';
 import { getClient } from '../client';
 import { TextChannel, ChannelType } from 'discord.js';
 import { isoDate } from './call-naming';
+import { shouldFireThisWeek } from './cron-format';
 import {
   Schedule,
   NewScheduleInput,
@@ -155,10 +156,28 @@ function syncTask(schedule: Schedule): boolean {
       console.log(
         `[Scheduler] Cron fired for "${schedule.name}" [${schedule.id}] at ${new Date().toISOString()} (timezone: ${schedule.timezone})`,
       );
+
+      // Week-interval gate: cron fires every matching week, but biweekly/every-N
+      // schedules only actually record on the weeks in phase with their anchor.
+      if (!shouldFireThisWeek(schedule.intervalWeeks, schedule.anchor, schedule.timezone)) {
+        console.log(
+          `[Scheduler] Skipping "${schedule.name}" [${schedule.id}] — off-week for every-${schedule.intervalWeeks}-weeks (anchor ${schedule.anchor}).`,
+        );
+        return;
+      }
+
       try {
         await triggerScheduledRecording(schedule.id);
       } catch (err) {
         console.error(`[Scheduler] Failed to start scheduled recording [${schedule.id}]:`, err);
+      } finally {
+        // A one-off fires exactly once, then removes itself so it cannot recur
+        // next year (cron has no year field). Done here (not in the manual
+        // /test-schedule path) so testing a one-off does not consume it.
+        if (schedule.oneOff) {
+          console.log(`[Scheduler] Removing one-off schedule "${schedule.name}" [${schedule.id}] after firing.`);
+          deleteSchedule(schedule.id);
+        }
       }
     },
     { timezone: schedule.timezone },

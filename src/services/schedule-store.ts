@@ -19,6 +19,24 @@ export interface Schedule {
   cron: string;
   /** IANA timezone the cron is evaluated in (e.g. "America/New_York"). */
   timezone: string;
+  /**
+   * How many weeks between fires for the weekly shape. 1 (or absent) = every
+   * week; 2 = every other week (biweekly); N = every N weeks. Enforced at
+   * fire-time by a gate in the scheduler, not by cron itself (cron cannot
+   * express week parity). Ignored for one-off schedules.
+   */
+  intervalWeeks?: number;
+  /**
+   * ISO date (YYYY-MM-DD) of a known "on" week, used as the phase reference for
+   * intervalWeeks. Whole weeks elapsed since this date determine whether a
+   * given week fires. Only meaningful when intervalWeeks > 1.
+   */
+  anchor?: string;
+  /**
+   * When true this is a one-off: its cron encodes a specific calendar date
+   * (`m h D M *`) and the schedule is deleted automatically after it fires.
+   */
+  oneOff?: boolean;
   /** When true the schedule is retained but its cron job is not active. */
   paused: boolean;
   /** Discord user id of whoever created it (or the bot id for the legacy seed). */
@@ -132,6 +150,9 @@ export function addSchedule(input: NewScheduleInput): Schedule {
       textChannelId: input.textChannelId,
       cron: input.cron,
       timezone: input.timezone,
+      intervalWeeks: input.intervalWeeks,
+      anchor: input.anchor,
+      oneOff: input.oneOff,
       paused: input.paused ?? false,
       createdBy: input.createdBy,
       createdAt: new Date().toISOString(),
