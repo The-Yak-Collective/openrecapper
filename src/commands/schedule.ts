@@ -17,7 +17,18 @@ import {
   pauseSchedule,
   resumeSchedule,
 } from '../services/scheduler';
-import { buildCron, describeCron, parseSimpleCron, dayLabel } from '../services/cron-format';
+import {
+  buildCron,
+  buildOneOffCron,
+  describeCron,
+  parseSimpleCron,
+  parseInterval,
+  parseDays,
+  parseTime,
+  nextFireDate,
+  dayLabel,
+  DescribeOpts,
+} from '../services/cron-format';
 
 const DEFAULT_TIMEZONE = 'America/New_York';
 
@@ -31,9 +42,14 @@ function isValidTimezone(tz: string): boolean {
   }
 }
 
+/** Describe-options derived from a schedule's interval/one-off fields. */
+function opts(s: Schedule): DescribeOpts {
+  return { intervalWeeks: s.intervalWeeks, anchor: s.anchor, oneOff: s.oneOff };
+}
+
 /** One-line description of a schedule for `/schedule list`. */
 function describeSchedule(s: Schedule): string {
-  const when = describeCron(s.cron, s.timezone);
+  const when = describeCron(s.cron, s.timezone, opts(s));
   const status = s.paused ? ' ⏸ **paused**' : '';
   const text = s.textChannelId ? `<#${s.textChannelId}>` : '⚠️ missing — edit text_channel before it can fire';
   return (
@@ -44,7 +60,7 @@ function describeSchedule(s: Schedule): string {
 
 /** Short choice label for autocomplete (Discord caps option name at 100 chars). */
 function autocompleteLabel(s: Schedule): string {
-  const label = `${s.name} — ${describeCron(s.cron, s.timezone)}${s.paused ? ' (paused)' : ''} [${s.id}]`;
+  const label = `${s.name} — ${describeCron(s.cron, s.timezone, opts(s))}${s.paused ? ' (paused)' : ''} [${s.id}]`;
   return label.length > 100 ? label.slice(0, 99) + '…' : label;
 }
 
@@ -60,7 +76,7 @@ export async function respondScheduleAutocomplete(interaction: AutocompleteInter
   const focused = (interaction.options.getFocused() || '').toString().toLowerCase();
   const matches = getSchedulesForGuild(interaction.guildId).filter((s) => {
     if (!focused) return true;
-    const hay = `${s.name} ${s.id} ${describeCron(s.cron, s.timezone)}`.toLowerCase();
+    const hay = `${s.name} ${s.id} ${describeCron(s.cron, s.timezone, opts(s))}`.toLowerCase();
     return hay.includes(focused);
   });
   await interaction.respond(
@@ -94,13 +110,31 @@ export const scheduleCommand = {
             .setRequired(true),
         )
         .addStringOption((o) =>
-          o
-            .setName('days')
-            .setDescription('Comma list of weekdays, e.g. mon,fri (also: weekdays, daily, weekends)')
-            .setRequired(true),
+          o.setName('time').setDescription('24-hour time HH:MM, e.g. 11:15').setRequired(true),
         )
         .addStringOption((o) =>
-          o.setName('time').setDescription('24-hour time HH:MM, e.g. 11:15').setRequired(true),
+          o
+            .setName('days')
+            .setDescription('Weekdays for a recurring call, e.g. mon,fri (also: weekdays, daily). Omit if using date.')
+            .setRequired(false),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('date')
+            .setDescription('One-off calendar date YYYY-MM-DD (fires once, then auto-deletes). Use instead of days.')
+            .setRequired(false),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('every')
+            .setDescription('Recurrence cadence: weekly (default) or biweekly / "2 weeks". Ignored for one-off dates.')
+            .setRequired(false)
+            .addChoices(
+              { name: 'weekly (every week)', value: 'weekly' },
+              { name: 'biweekly (every 2 weeks)', value: 'biweekly' },
+              { name: 'every 3 weeks', value: '3 weeks' },
+              { name: 'every 4 weeks', value: '4 weeks' },
+            ),
         )
         .addStringOption((o) =>
           o
@@ -136,8 +170,21 @@ export const scheduleCommand = {
             .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
             .setRequired(false),
         )
-        .addStringOption((o) => o.setName('days').setDescription('New days, e.g. mon,fri').setRequired(false))
+        .addStringOption((o) => o.setName('days').setDescription('New days, e.g. mon,fri (switches a one-off back to recurring)').setRequired(false))
+        .addStringOption((o) => o.setName('date').setDescription('New one-off date YYYY-MM-DD (converts to a one-off)').setRequired(false))
         .addStringOption((o) => o.setName('time').setDescription('New time HH:MM').setRequired(false))
+        .addStringOption((o) =>
+          o
+            .setName('every')
+            .setDescription('New cadence: weekly / biweekly / "N weeks"')
+            .setRequired(false)
+            .addChoices(
+              { name: 'weekly (every week)', value: 'weekly' },
+              { name: 'biweekly (every 2 weeks)', value: 'biweekly' },
+              { name: 'every 3 weeks', value: '3 weeks' },
+              { name: 'every 4 weeks', value: '4 weeks' },
+            ),
+        )
         .addStringOption((o) => o.setName('timezone').setDescription('New IANA timezone').setRequired(false))
         .addChannelOption((o) =>
           o
@@ -204,8 +251,10 @@ export const scheduleCommand = {
 
     if (sub === 'add') {
       const voice = interaction.options.getChannel('voice_channel', true);
-      const days = interaction.options.getString('days', true);
+      const days = interaction.options.getString('days');
+      const date = interaction.options.getString('date');
       const time = interaction.options.getString('time', true);
+      const everyRaw = interaction.options.getString('every');
       const timezone = interaction.options.getString('timezone') || DEFAULT_TIMEZONE;
       const text = interaction.options.getChannel('text_channel');
       let name = interaction.options.getString('name')?.trim() || '';
@@ -215,17 +264,61 @@ export const scheduleCommand = {
         return;
       }
 
+      // Exactly one of days / date must be provided.
+      if (days && date) {
+        await interaction.reply({
+          content: '❌ Provide either `days` (recurring) **or** `date` (one-off), not both.',
+          ephemeral: true,
+        });
+        return;
+      }
+      if (!days && !date) {
+        await interaction.reply({
+          content: '❌ Provide `days` for a recurring call, or `date` for a one-off.',
+          ephemeral: true,
+        });
+        return;
+      }
+      if (date && everyRaw) {
+        await interaction.reply({
+          content: '❌ `every` (cadence) does not apply to a one-off `date`.',
+          ephemeral: true,
+        });
+        return;
+      }
+
       let cron: string;
+      let oneOff = false;
+      let intervalWeeks: number | undefined;
+      let anchor: string | undefined;
+
       try {
-        cron = buildCron(days, time);
+        if (date) {
+          cron = buildOneOffCron(date, time);
+          oneOff = true;
+        } else {
+          cron = buildCron(days!, time);
+          const n = parseInterval(everyRaw);
+          if (n > 1) {
+            intervalWeeks = n;
+            // Anchor the interval phase to the next matching occurrence so the
+            // first real recording happens then (not N weeks out).
+            const parsed = parseSimpleCron(cron)!;
+            anchor = nextFireDate(parsed.days, parsed.hour, parsed.minute, timezone);
+          }
+        }
       } catch (err: any) {
         await interaction.reply({ content: `❌ ${err.message}`, ephemeral: true });
         return;
       }
 
       if (!name) {
-        const parsed = parseSimpleCron(cron)!; // buildCron always yields the simple shape
-        name = `${parsed.days.map(dayLabel).join('/')} call`;
+        if (oneOff) {
+          name = `One-off ${date}`;
+        } else {
+          const parsed = parseSimpleCron(cron)!; // buildCron always yields the simple shape
+          name = `${parsed.days.map(dayLabel).join('/')} call`;
+        }
       }
 
       const textChannelId = text?.id || interaction.channelId;
@@ -236,6 +329,9 @@ export const scheduleCommand = {
         textChannelId,
         cron,
         timezone,
+        intervalWeeks,
+        anchor,
+        oneOff,
         paused: false,
         createdBy: interaction.user.id,
       });
@@ -294,7 +390,9 @@ export const scheduleCommand = {
     if (sub === 'edit') {
       const voice = interaction.options.getChannel('voice_channel');
       const days = interaction.options.getString('days');
+      const date = interaction.options.getString('date');
       const time = interaction.options.getString('time');
+      const everyRaw = interaction.options.getString('every');
       const timezone = interaction.options.getString('timezone');
       const text = interaction.options.getChannel('text_channel');
       const name = interaction.options.getString('name')?.trim();
@@ -305,6 +403,16 @@ export const scheduleCommand = {
       if (voice) patch.voiceChannelId = voice.id;
       if (text) patch.textChannelId = text.id;
 
+      if (days && date) {
+        await interaction.reply({
+          content: '❌ Provide either `days` (recurring) **or** `date` (one-off), not both.',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Effective timezone for any anchor recomputation below.
+      const effectiveTz = timezone || schedule.timezone;
       if (timezone) {
         if (!isValidTimezone(timezone)) {
           await interaction.reply({ content: `❌ Unknown timezone \`${timezone}\`.`, ephemeral: true });
@@ -313,11 +421,34 @@ export const scheduleCommand = {
         patch.timezone = timezone;
       }
 
-      if (days || time) {
-        // Recompute cron. Fill the unspecified side from the existing cron when possible.
+      // Convert to a one-off if a date is supplied.
+      if (date) {
+        const timeStr =
+          time ??
+          (() => {
+            const ex = parseSimpleCron(schedule.cron);
+            return ex ? `${String(ex.hour).padStart(2, '0')}:${String(ex.minute).padStart(2, '0')}` : null;
+          })();
+        if (!timeStr) {
+          await interaction.reply({
+            content: '❌ Converting to a one-off needs a `time` (this schedule has no simple time to reuse).',
+            ephemeral: true,
+          });
+          return;
+        }
+        try {
+          patch.cron = buildOneOffCron(date, timeStr);
+        } catch (err: any) {
+          await interaction.reply({ content: `❌ ${err.message}`, ephemeral: true });
+          return;
+        }
+        patch.oneOff = true;
+        patch.intervalWeeks = undefined;
+        patch.anchor = undefined;
+      } else if (days || time) {
+        // Recurring days/time edit. Fill the unspecified side from existing cron.
         const existing = parseSimpleCron(schedule.cron);
-        const daysStr =
-          days ?? (existing ? existing.days.join(',') : null);
+        const daysStr = days ?? (existing ? existing.days.join(',') : null);
         const timeStr =
           time ??
           (existing
@@ -336,6 +467,50 @@ export const scheduleCommand = {
         } catch (err: any) {
           await interaction.reply({ content: `❌ ${err.message}`, ephemeral: true });
           return;
+        }
+        // Editing days/time on a former one-off makes it recurring again.
+        if (schedule.oneOff) patch.oneOff = false;
+      }
+
+      // Cadence change (only meaningful for recurring schedules).
+      if (everyRaw !== null) {
+        const willBeOneOff = patch.oneOff ?? schedule.oneOff;
+        if (willBeOneOff) {
+          await interaction.reply({
+            content: '❌ `every` (cadence) does not apply to a one-off schedule.',
+            ephemeral: true,
+          });
+          return;
+        }
+        let n: number;
+        try {
+          n = parseInterval(everyRaw);
+        } catch (err: any) {
+          await interaction.reply({ content: `❌ ${err.message}`, ephemeral: true });
+          return;
+        }
+        if (n > 1) {
+          patch.intervalWeeks = n;
+        } else {
+          patch.intervalWeeks = undefined;
+          patch.anchor = undefined;
+        }
+      }
+
+      // If the schedule is (or becomes) an interval schedule and its cadence or
+      // days/time changed, (re)anchor phase to the next matching occurrence.
+      const finalInterval =
+        'intervalWeeks' in patch ? patch.intervalWeeks : schedule.intervalWeeks;
+      const finalCron = patch.cron ?? schedule.cron;
+      const finalOneOff = patch.oneOff ?? schedule.oneOff;
+      const needsAnchor =
+        !finalOneOff &&
+        (finalInterval ?? 1) > 1 &&
+        (everyRaw !== null || patch.cron !== undefined || !schedule.anchor);
+      if (needsAnchor) {
+        const parsed = parseSimpleCron(finalCron);
+        if (parsed) {
+          patch.anchor = nextFireDate(parsed.days, parsed.hour, parsed.minute, effectiveTz);
         }
       }
 
