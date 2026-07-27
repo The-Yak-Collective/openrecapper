@@ -62,6 +62,13 @@ export const Config = {
   // Optional override for where standing-call schedules are persisted.
   // Defaults to ./data/schedules.json (managed via the /schedule command).
   SCHEDULES_FILE: process.env.SCHEDULES_FILE || '',
+  // Native Discord Scheduled Events -> auto-record (opt-in, default OFF).
+  //   ''/'off'/'false'/'0'   -> disabled (default; adding the gateway intent
+  //                            stays behaviorally inert)
+  //   'on'/'all'/'true'/'1'  -> enabled for every guild
+  //   '<id>,<id>,...'        -> enabled only for the listed guild ids
+  // See isGuildEventRecordingEnabled() in services/event-trigger-service.ts.
+  GUILD_EVENT_RECORDING: process.env.GUILD_EVENT_RECORDING || '',
   // Optional override for where per-guild /record grants are persisted.
   // Defaults to ./data/record-permissions.json (managed via /record-access).
   RECORD_PERMISSIONS_FILE: process.env.RECORD_PERMISSIONS_FILE || '',

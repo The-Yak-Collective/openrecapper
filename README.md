@@ -179,6 +179,41 @@ A configurable **silence timeout** (`SILENCE_TIMEOUT_MINUTES`, default 20) makes
 the bot auto-leave a call with no voice activity, and old audio files are pruned
 after `RECORDING_RETENTION_DAYS` (default 7) while transcripts are kept.
 
+### Native Discord Scheduled Events (optional, opt-in)
+
+Instead of (or alongside) `/schedule`, organizers can drive recording from
+Discord's built-in **Events** UI. When a **Voice/Stage** scheduled event goes
+live, the bot auto-joins and records its voice channel; when the call ends the
+recording stops and the transcript/summary is posted to a text channel — the
+same delivery flow as `/record` and `/schedule`. Discord's native `recurrence`
+(e.g. biweekly) works, so standing calls can be managed entirely from the Events
+UI.
+
+Because events can't hold attachments and disappear from the UI once completed,
+results are **not** written back onto the event; they post as a normal message
+in the target text channel (the guild's `/set-summary-channel`, else the system
+channel, else the first text channel the bot can post in). While the event is
+still live, its description is annotated with where results will land.
+
+Stopping is driven by the **voice channel emptying of humans** (not the event's
+`Completed` status — Discord doesn't emit `Completed` for recurring events, it
+rolls over to the next occurrence). `Completed`/`Canceled`/`Deleted` are handled
+as extra safety-net stops.
+
+This is **opt-in and default OFF** so enabling the (non-privileged)
+`GuildScheduledEvents` gateway intent doesn't silently change behavior. Enable
+via the `GUILD_EVENT_RECORDING` env var:
+
+```
+GUILD_EVENT_RECORDING=off              # default — disabled
+GUILD_EVENT_RECORDING=on               # enable for every guild
+GUILD_EVENT_RECORDING=<guildId>,<...>  # enable only for listed guild ids
+```
+
+Recording still funnels through the one-recording-per-channel guard, so a
+channel already recorded by `/schedule` or `/record` is skipped, never
+double-started. Design details: [`docs/GUILD_EVENT_RECORDING.md`](docs/GUILD_EVENT_RECORDING.md).
+
 ## Privacy & consent
 
 This bot records and transcribes voice conversations. **You are responsible**

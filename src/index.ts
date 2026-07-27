@@ -16,6 +16,7 @@ import { startScheduler, stopScheduler } from './services/scheduler';
 import { loadGrapevineConfig, handleReactionAdd } from './services/grapevine-service';
 import { runStartupHealthChecks } from './services/health-check';
 import { startCleanupScheduler } from './services/recording-cleanup';
+import { defaultDeps as eventTriggerDeps, handleEventUpdate, stopForEvent, isGuildEventRecordingEnabled } from './services/event-trigger-service';
 
 validateConfig();
 
@@ -39,6 +40,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent, // privileged: needed to forward message text
+    // Non-privileged (no dashboard toggle). Enables Events.GuildScheduledEvent*
+    // so native Discord Scheduled Events can trigger recording. Behaviorally
+    // inert unless GUILD_EVENT_RECORDING opts a guild in (default OFF).
+    GatewayIntentBits.GuildScheduledEvents,
   ],
   // Reactions on older (uncached) messages arrive as partials; enable so we can fetch them.
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
@@ -151,6 +156,36 @@ client.on(Events.VoiceStateUpdate, async (oldState: VoiceState, newState: VoiceS
     console.error('[AutoStop] Failed to stop recording:', err);
   } finally {
     stoppingChannels.delete(channelId);
+  }
+});
+
+// ── Native Discord Scheduled Events -> recording (opt-in via GUILD_EVENT_RECORDING) ──
+// Start when an event goes ACTIVE; the shared VoiceStateUpdate auto-stop above
+// handles the primary stop (channel empties of humans). Terminal/Deleted are
+// belt-and-suspenders stops. See services/event-trigger-service.ts.
+client.on(Events.GuildScheduledEventUpdate, async (oldEvent, newEvent) => {
+  try {
+    const status = await handleEventUpdate((oldEvent ?? null) as any, newEvent as any, eventTriggerDeps(client));
+    if (status !== 'noop' && !status.startsWith('skipped: not enabled')) {
+      console.log(`[EventTrigger] Update "${newEvent.name}" [${newEvent.id}] -> ${status}`);
+    }
+  } catch (err) {
+    console.error('[EventTrigger] Error handling GuildScheduledEventUpdate:', err);
+  }
+});
+
+client.on(Events.GuildScheduledEventCreate, (event) => {
+  if (!isGuildEventRecordingEnabled(event.guildId)) return;
+  console.log(`[EventTrigger] Event created: "${event.name}" [${event.id}] status=${event.status} entity=${event.entityType} in guild ${event.guildId}`);
+});
+
+client.on(Events.GuildScheduledEventDelete, async (event) => {
+  if (!isGuildEventRecordingEnabled(event.guildId)) return;
+  console.log(`[EventTrigger] Event deleted: "${event.name}" [${event.id}] — stopping any recording on its channel`);
+  try {
+    await stopForEvent(event as any, eventTriggerDeps(client));
+  } catch (err) {
+    console.error('[EventTrigger] Error handling GuildScheduledEventDelete:', err);
   }
 });
 
