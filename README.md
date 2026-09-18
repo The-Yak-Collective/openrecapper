@@ -85,7 +85,9 @@ toolchain able to build native modules (`@discordjs/opus`, `sodium-native`,
    create another bot application in the Discord Developer Portal and invite
    it to your server(s) with Connect + Speak permissions (a recorder not
    invited to a server simply doesn't count toward that server's capacity).
-   Single-token setups can keep using `DISCORD_TOKEN` unchanged.
+   Single-token setups can keep using `DISCORD_TOKEN` unchanged. Step-by-step
+   instructions and load considerations are in
+   [DISCORD_SETUP.md § 7](DISCORD_SETUP.md#7-adding-more-bots-for-concurrent-recordings-optional).
 
    **Meeting names for `/record`**: set `RECORD_MEETING_NAMES` to a
    comma-separated list of names shown in the required `name:` picker. The list

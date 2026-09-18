@@ -90,7 +90,67 @@ npm run dev
 
 You should see: `✅ Logged in as YourBot#1234`
 
-## 7. Token Management Best Practices
+## 7. Adding More Bots for Concurrent Recordings (optional)
+
+Discord allows each bot identity **one voice connection per server**. To
+record N meetings in the same server at the same time (e.g. parallel workshop
+tracks), you need N bot identities. You do **not** run N copies of the bot —
+one process drives all of them via `DISCORD_TOKENS`.
+
+- The **first** token is the *primary*: it handles slash commands, live
+  transcript posts, results, and delivery (and can record too).
+- Every further token is a *voice-only recorder* identity. The bot picks a free
+  one automatically each time `/record` runs.
+- The number of tokens is the per-server concurrency limit.
+
+For each extra bot:
+
+1. **Create another application** in the Developer Portal (steps 1–2 above).
+   If your existing app lives under a Team, create the new one under the same
+   Team so they stay grouped. Name it distinguishably (e.g. `OpenRecapper-2`)
+   and reuse the same icon if you want them to look alike in the member list.
+2. **Reset Token** and copy it — it is shown only once. Enable **Message
+   Content Intent** on it too: recorders don't strictly need it, but doing so
+   lets you promote any of them to primary later without a "disallowed
+   intents" login failure.
+3. **Invite it to the server** with the same URL as step 4, substituting the
+   new app's Application ID. This is the step people forget — a token whose
+   bot isn't in the server simply doesn't add capacity there.
+4. On private voice channels, check the **channel-level permission
+   overrides**: the invite grants server-wide permissions, but a private
+   channel can still deny the new bot's role `View Channel` / `Connect`.
+
+Then edit `.env` — replace `DISCORD_TOKEN` with a comma-separated list,
+**primary first**:
+
+```env
+DISCORD_TOKENS=<primary-token>,<recorder-2-token>,<recorder-3-token>
+DISCORD_CLIENT_ID=<primary application id>   # unchanged
+```
+
+`DISCORD_CLIENT_ID` stays the primary's ID; slash commands are registered only
+there, so there is no need to re-run `npm run register`. Restart the bot and
+confirm the log shows one `✅ Logged in as …` plus one
+`✅ Recorder logged in as …` line per extra token. A recorder that fails to log
+in does **not** stop the bot — it just quietly reduces capacity — so do check
+the log rather than assuming.
+
+**Load notes for several simultaneous recordings:**
+
+- Discord-side load is negligible; each identity has its own voice connection
+  and all REST traffic stays on the primary.
+- Disk is the main risk on the host. Each speaker is written as 48 kHz stereo
+  PCM (~700 MB per hour of session once they have spoken), plus a combined
+  PCM + WAV at stop. Four 90-minute rooms with ~8 speakers each can consume
+  tens of GB before cleanup. Check `df -h` beforehand.
+- Live transcription opens one Deepgram streaming connection per speaker per
+  session; check your Deepgram plan's concurrency limit if you expect many
+  speakers across several rooms.
+- Post-processing at `/stop` (mixdown, batch transcription, summary, upload)
+  is CPU-heavy and limited to two sessions at a time. If several rooms stop
+  together, the rest queue and finish a few minutes later — nothing is lost.
+
+## 8. Token Management Best Practices
 
 - **Never commit `.env`** — it's in `.gitignore`
 - **Rotate tokens** if anyone who shouldn't have access sees them
