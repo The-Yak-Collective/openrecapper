@@ -114,8 +114,11 @@ For each extra bot:
    lets you promote any of them to primary later without a "disallowed
    intents" login failure.
 3. **Invite it to the server** with the same URL as step 4, substituting the
-   new app's Application ID. This is the step people forget — a token whose
-   bot isn't in the server simply doesn't add capacity there.
+   new app's Application ID for `YOUR_CLIENT_ID` (just the digits, e.g.
+   `client_id=123456789012345678` — no brackets or quotes). This is the step
+   people forget — a token whose bot isn't in the server simply doesn't add
+   capacity there. Choose **Add to Server** (not "Try it now"/user install)
+   in the dialog; you need Manage Server in the target server.
 4. On private voice channels, check the **channel-level permission
    overrides**: the invite grants server-wide permissions, but a private
    channel can still deny the new bot's role `View Channel` / `Connect`.
