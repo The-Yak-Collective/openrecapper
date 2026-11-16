@@ -37,6 +37,48 @@ function isSessionProtected(sessionDir: string): boolean {
   }
 }
 
+const WAV_HEADER_BYTES = 44;
+
+/** Free MB on the volume holding `dir`, or null if it can't be determined. */
+export function freeDiskMb(dir: string): number | null {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const st = fs.statfsSync(dir);
+    return Math.floor((st.bavail * st.bsize) / (1024 * 1024));
+  } catch (err) {
+    console.error(`[RecordingCleanup] Could not read free disk space for ${dir}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Delete `combined.pcm` when a complete `recording.wav` sits next to it.
+ * The WAV is the same samples plus a 44-byte header, so the PCM is a pure
+ * duplicate. The size check guards against a WAV that was truncated (e.g. the
+ * disk filled up mid-conversion) — in that case the PCM is kept.
+ * Returns bytes freed.
+ */
+export function removeRedundantCombinedPcm(sessionDir: string): number {
+  const pcmPath = path.join(sessionDir, 'combined.pcm');
+  const wavPath = path.join(sessionDir, 'recording.wav');
+  try {
+    if (!fs.existsSync(pcmPath) || !fs.existsSync(wavPath)) return 0;
+    const pcmSize = fs.statSync(pcmPath).size;
+    const wavSize = fs.statSync(wavPath).size;
+    if (wavSize !== pcmSize + WAV_HEADER_BYTES) {
+      console.warn(
+        `[RecordingCleanup] Keeping ${pcmPath}: recording.wav size ${wavSize} != pcm ${pcmSize} + header`
+      );
+      return 0;
+    }
+    fs.unlinkSync(pcmPath);
+    return pcmSize;
+  } catch (err) {
+    console.error(`[RecordingCleanup] Failed to remove redundant ${pcmPath}:`, err);
+    return 0;
+  }
+}
+
 interface CleanupResult {
   /** Number of session directories scanned. */
   scanned: number;
@@ -121,6 +163,14 @@ export function cleanupOldRecordings(): CleanupResult {
     if (isSessionProtected(sessionDir)) {
       result.skipped++;
       continue;
+    }
+
+    // combined.pcm is always redundant once a complete recording.wav exists,
+    // so reclaim it immediately regardless of age or processing state.
+    const dedupFreed = removeRedundantCombinedPcm(sessionDir);
+    if (dedupFreed > 0) {
+      result.bytesFreed += dedupFreed;
+      console.log(`[RecordingCleanup] Removed redundant combined.pcm in ${entry} (${formatBytes(dedupFreed)})`);
     }
 
     // Extract timestamp from directory name
@@ -210,6 +260,11 @@ function runCleanup(): void {
       `[RecordingCleanup] Done: scanned=${result.scanned}, cleaned=${result.cleaned}, ` +
       `skipped=${result.skipped}, freed=${formatBytes(result.bytesFreed)}`
     );
+    const freeMb = freeDiskMb(Config.RECORDINGS_DIR);
+    if (freeMb !== null) {
+      const level = freeMb < Config.MIN_FREE_DISK_MB ? 'warn' : 'log';
+      console[level](`[RecordingCleanup] Free space on recordings volume: ${formatBytes(freeMb * 1024 * 1024)}`);
+    }
   } catch (err) {
     console.error('[RecordingCleanup] Unexpected error during cleanup:', err);
   }

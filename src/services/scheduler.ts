@@ -1,5 +1,5 @@
 import * as cron from 'node-cron';
-import { WorkerManager, AlreadyRecordingError } from './worker-manager';
+import { WorkerManager, AlreadyRecordingError, LowDiskSpaceError } from './worker-manager';
 import { NoRecorderAvailableError } from './recorder-pool';
 import { getClient } from '../client';
 import { TextChannel, ChannelType } from 'discord.js';
@@ -90,6 +90,12 @@ export async function triggerScheduledRecording(id: string): Promise<string> {
     if (err instanceof NoRecorderAvailableError) {
       const msg = `⚠️ Scheduled recording "${callName}" skipped — all recorder bots are busy in this server.`;
       console.warn(`[Scheduler] ${msg}`);
+      await textChannel.send(msg).catch(() => {});
+      return msg;
+    }
+    if (err instanceof LowDiskSpaceError) {
+      const msg = `❌ Scheduled recording "${callName}" skipped — the server is low on disk space (${err.freeMb} MB free).`;
+      console.error(`[Scheduler] ${msg}`);
       await textChannel.send(msg).catch(() => {});
       return msg;
     }

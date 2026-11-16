@@ -55,6 +55,10 @@ export const Config = {
   // Number of days to keep raw audio files (.pcm, .wav) before auto-cleanup.
   // Transcripts and metadata are always preserved. Default: 7 days.
   RECORDING_RETENTION_DAYS: parseInt(process.env.RECORDING_RETENTION_DAYS || '7', 10),
+  // Refuse to start a recording when the recordings volume has less than this
+  // many MB free. Raw capture is ~0.7 GB per speaker per hour, so running out
+  // mid-call silently loses audio. Set to 0 to disable the check.
+  MIN_FREE_DISK_MB: parseInt(process.env.MIN_FREE_DISK_MB || '2048', 10),
   // Minutes of silence (no opus packets from any user) before the bot
   // auto-leaves the voice channel. Generous default (20 min) to accommodate
   // study-group silent reading periods. Set to 0 to disable.

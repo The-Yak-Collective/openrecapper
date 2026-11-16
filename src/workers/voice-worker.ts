@@ -174,6 +174,15 @@ export class VoiceWorker {
     // Append mode: if the opus stream auto-closes on silence and restarts,
     // we don't lose earlier audio
     const writeStream = createWriteStream(filePath, { flags: 'a' });
+    // Without a listener a write failure (e.g. ENOSPC) surfaces only as a
+    // generic uncaught exception and the user's audio silently stops.
+    writeStream.on('error', (err: NodeJS.ErrnoException) => {
+      console.error(
+        `[VoiceWorker] Write failed for user ${userId} (${filePath})` +
+        (err.code === 'ENOSPC' ? ' — DISK FULL, audio for this speaker is being lost' : '') + ':',
+        err
+      );
+    });
 
     // Use Manual end behavior — we control when the stream ends (at stop time)
     // This keeps a single long-lived subscription for the entire recording session

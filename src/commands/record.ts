@@ -4,7 +4,7 @@ import {
   ChannelType,
   PermissionFlagsBits,
 } from 'discord.js';
-import { WorkerManager, AlreadyRecordingError } from '../services/worker-manager';
+import { WorkerManager, AlreadyRecordingError, LowDiskSpaceError } from '../services/worker-manager';
 import { RecorderPool, NoRecorderAvailableError } from '../services/recorder-pool';
 import { adHocCallName } from '../services/call-naming';
 import { hasRecordPermission } from '../services/record-permission-store';
@@ -94,6 +94,14 @@ export const recordCommand = {
     } catch (error) {
       if (error instanceof AlreadyRecordingError) {
         await interaction.editReply(`⚠️ Already recording <#${targetChannel.id}>.`);
+        return;
+      }
+      if (error instanceof LowDiskSpaceError) {
+        console.error('[Command:/record] Refusing to start:', error.message);
+        await interaction.editReply(
+          `❌ Can't start recording: the server is low on disk space (${error.freeMb} MB free). ` +
+          `Ask the bot operator to free up space.`
+        );
         return;
       }
       if (error instanceof NoRecorderAvailableError) {
