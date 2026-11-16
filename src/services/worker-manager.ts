@@ -10,6 +10,7 @@ import { TextChannel, MessageCreateOptions } from 'discord.js';
 import path from 'path';
 import fs from 'fs';
 import { meetingFolderFromCallName } from './call-naming';
+import { removeRedundantCombinedPcm, freeDiskMb } from './recording-cleanup';
 
 export interface RecordingSession {
   guildId: string;
@@ -83,6 +84,17 @@ export class AlreadyRecordingError extends Error {
   }
 }
 
+/**
+ * Thrown when the recordings volume is too full to safely start a recording.
+ * Callers turn this into a friendly message instead of a generic failure.
+ */
+export class LowDiskSpaceError extends Error {
+  constructor(public readonly freeMb: number, public readonly requiredMb: number) {
+    super(`Only ${freeMb} MB free on the recordings volume (need ${requiredMb} MB)`);
+    this.name = 'LowDiskSpaceError';
+  }
+}
+
 export class WorkerManager {
   private static instance: WorkerManager;
   private sessions: Map<string, RecordingSession> = new Map();
@@ -139,6 +151,15 @@ export class WorkerManager {
   }
 
   async startRecording(options: StartRecordingOptions): Promise<void> {
+    // Fail fast when the disk is nearly full: a write error mid-call silently
+    // drops audio, which is far worse than refusing to start.
+    if (Config.MIN_FREE_DISK_MB > 0) {
+      const freeMb = freeDiskMb(Config.RECORDINGS_DIR);
+      if (freeMb !== null && freeMb < Config.MIN_FREE_DISK_MB) {
+        throw new LowDiskSpaceError(freeMb, Config.MIN_FREE_DISK_MB);
+      }
+    }
+
     // Reserve the target CHANNEL synchronously — before any await can run — so
     // two near-simultaneous starts for the same channel cannot both proceed
     // and put two different recorder bots into one voice channel.
@@ -312,6 +333,31 @@ export class WorkerManager {
 
     const artifacts = await this.prepareDeliveryArtifacts(stopResult, session, client);
     await this.postDeliveryMessage(textChannel, session, artifacts, client);
+
+    // Per-speaker PCM tracks are only needed to re-transcribe. Once the
+    // transcript exists, the mixed WAV is safely in R2, and delivery is done,
+    // they are dead weight (~0.7 GB per speaker-hour). If anything failed,
+    // keep them so the session can be recovered.
+    if (!artifacts.transcriptionFailed && artifacts.r2Prefix && !artifacts.uploadWarning) {
+      this.deletePerUserPcm(files);
+    }
+  }
+
+  private deletePerUserPcm(files: string[]): void {
+    let freed = 0;
+    for (const f of files) {
+      if (!f.endsWith('.pcm')) continue;
+      try {
+        const size = fs.statSync(f).size;
+        fs.unlinkSync(f);
+        freed += size;
+      } catch (err) {
+        console.error(`[WorkerManager] Failed to delete per-user PCM ${f}:`, err);
+      }
+    }
+    if (freed > 0) {
+      console.log(`[WorkerManager] Removed per-user PCM tracks after upload (${(freed / 1024 / 1024).toFixed(1)}MB freed)`);
+    }
   }
 
   private async prepareDeliveryArtifacts(
@@ -326,6 +372,10 @@ export class WorkerManager {
 
     await this.mixdownPcmFiles(files, userStartTimes, sessionStartedAt, combinedPcmPath);
     await this.pcmToWavStream(combinedPcmPath, combinedWavPath);
+    // combined.pcm is byte-identical to recording.wav minus the 44-byte header
+    // and is never uploaded or read again — drop it now instead of keeping a
+    // second full-length copy of the call on disk for the retention period.
+    removeRedundantCombinedPcm(sessionDir);
 
     const speakerNames = await this.resolveSpeakerNames(client, session.guildId, userMap);
     const rosterHeader = this.buildRosterHeader(speakerNames);

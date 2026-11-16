@@ -179,6 +179,17 @@ A configurable **silence timeout** (`SILENCE_TIMEOUT_MINUTES`, default 20) makes
 the bot auto-leave a call with no voice activity, and old audio files are pruned
 after `RECORDING_RETENTION_DAYS` (default 7) while transcripts are kept.
 
+**Disk usage:** raw capture is uncompressed 48 kHz stereo — about **0.7 GB per
+speaker per hour**. To keep that bounded, the redundant `combined.pcm` is
+deleted as soon as `recording.wav` is written, and per-speaker `.pcm` tracks
+are deleted once the transcript is saved and the session has been uploaded to
+R2 (if transcription or upload fails, everything is kept for recovery).
+Note that per-speaker tracks are **not** uploaded to R2, so after this point a
+transcript cannot be re-run with speaker labels; only the mixed `recording.wav`
+remains.
+`/record` and scheduled recordings refuse to start when the recordings volume
+has less than `MIN_FREE_DISK_MB` (default 2048) free.
+
 ## Privacy & consent
 
 This bot records and transcribes voice conversations. **You are responsible**
