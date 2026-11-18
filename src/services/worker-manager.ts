@@ -10,7 +10,7 @@ import { TextChannel, MessageCreateOptions } from 'discord.js';
 import path from 'path';
 import fs from 'fs';
 import { meetingFolderFromCallName } from './call-naming';
-import { removeRedundantCombinedPcm, freeDiskMb } from './recording-cleanup';
+import { removeRedundantCombinedPcm, freeDiskMb, isSessionProtected } from './recording-cleanup';
 
 export interface RecordingSession {
   guildId: string;
@@ -338,7 +338,11 @@ export class WorkerManager {
     // transcript exists, the mixed WAV is safely in R2, and delivery is done,
     // they are dead weight (~0.7 GB per speaker-hour). If anything failed,
     // keep them so the session can be recovered.
-    if (!artifacts.transcriptionFailed && artifacts.r2Prefix && !artifacts.uploadWarning) {
+    // A DO_NOT_DELETE.md marker (see recording-cleanup) always wins.
+    if (
+      !artifacts.transcriptionFailed && artifacts.r2Prefix && !artifacts.uploadWarning &&
+      !isSessionProtected(stopResult.sessionDir)
+    ) {
       this.deletePerUserPcm(files);
     }
   }

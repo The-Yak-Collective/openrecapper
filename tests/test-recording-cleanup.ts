@@ -43,6 +43,17 @@ function freshDir(): string {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// Case 3b: DO_NOT_DELETE marker → PCM kept even with a complete WAV
+{
+  const dir = freshDir();
+  fs.writeFileSync(path.join(dir, 'combined.pcm'), Buffer.alloc(1000));
+  fs.writeFileSync(path.join(dir, 'recording.wav'), Buffer.alloc(1044));
+  fs.writeFileSync(path.join(dir, 'DO_NOT_DELETE.md'), 'keep');
+  const freed = removeRedundantCombinedPcm(dir);
+  check('Case 3b: protected session keeps combined.pcm', freed === 0 && fs.existsSync(path.join(dir, 'combined.pcm')));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 // Case 4: freeDiskMb returns a plausible number
 {
   const mb = freeDiskMb(os.tmpdir());

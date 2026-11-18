@@ -29,7 +29,7 @@ const KEEP_FILES = new Set(['transcript.txt', 'transcript.srt', 'metadata.json',
 const PROTECT_MARKER = 'do_not_delete.md';
 
 /** Whether a session directory is protected by a DO_NOT_DELETE marker. */
-function isSessionProtected(sessionDir: string): boolean {
+export function isSessionProtected(sessionDir: string): boolean {
   try {
     return fs.readdirSync(sessionDir).some((f) => f.toLowerCase() === PROTECT_MARKER);
   } catch {
@@ -61,6 +61,7 @@ export function freeDiskMb(dir: string): number | null {
 export function removeRedundantCombinedPcm(sessionDir: string): number {
   const pcmPath = path.join(sessionDir, 'combined.pcm');
   const wavPath = path.join(sessionDir, 'recording.wav');
+  if (isSessionProtected(sessionDir)) return 0;
   try {
     if (!fs.existsSync(pcmPath) || !fs.existsSync(wavPath)) return 0;
     const pcmSize = fs.statSync(pcmPath).size;
